@@ -6,10 +6,15 @@ import time
 import asyncio
 from pathlib import Path
 
+import ccxt
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 from . import __version__
 from .config import Config
 from .logger import setup_logging, get_logger
 from .database import init_db, create_schema, insert_signal, insert_warning, insert_params_snapshot, transaction
+from .jobs import refresh_universe
+from .universe import UniverseConfig, filter_markets
 
 logger = get_logger(__name__)
 
@@ -55,6 +60,72 @@ async def async_main(args: argparse.Namespace, config: Config) -> int:
         
         # Create schema
         create_schema(conn)
+        
+        # Initialize MEXC exchange
+        logger.info("Initializing MEXC exchange...")
+        exchange = ccxt.mexc({
+            'apiKey': config.mexc_api_key,
+            'secret': config.mexc_api_secret,
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'swap',  # Futures/swap
+            },
+        })
+        
+        if config.mexc_testnet:
+            logger.info("Using MEXC testnet")
+            exchange.set_sandbox_mode(True)
+        
+        # Perform initial universe load
+        logger.info("Loading initial market universe...")
+        try:
+            from .universe import load_mexc_futures_markets
+            
+            # Load markets (run in executor since it's blocking)
+            markets = await asyncio.get_event_loop().run_in_executor(
+                None, load_mexc_futures_markets, exchange, 3600, False
+            )
+            logger.info(f"Loaded {len(markets)} total markets from MEXC")
+            
+            # Apply filters
+            # Convert pydantic UniverseConfig to universe.UniverseConfig for compatibility
+            universe_filter_config = UniverseConfig(
+                min_volume_usd=config.universe.min_volume_usd,
+                max_spread_percent=config.universe.max_spread_percent,
+                exclude_patterns=config.universe.exclude_patterns,
+                exclude_symbols=config.universe.exclude_symbols,
+                min_notional=config.universe.min_notional,
+                min_price=config.universe.min_price,
+                max_price=config.universe.max_price,
+            )
+            
+            filtered_markets = filter_markets(markets, universe_filter_config)
+            logger.info(f"Filtered to {len(filtered_markets)} markets")
+            
+            # Log sample symbols
+            sample_symbols = list(filtered_markets.keys())[:10]
+            logger.info(f"Sample markets: {', '.join(sample_symbols)}")
+            
+        except Exception as e:
+            logger.error(f"Failed to load initial universe: {e}")
+            logger.warning("Continuing with empty universe")
+            filtered_markets = {}
+        
+        # Setup APScheduler for periodic universe refresh
+        scheduler = AsyncIOScheduler(timezone='UTC')
+        refresh_hours = config.universe.refresh_interval_hours
+        scheduler.add_job(
+            refresh_universe,
+            'interval',
+            hours=int(refresh_hours),
+            minutes=int((refresh_hours - int(refresh_hours)) * 60),
+            args=[exchange, conn, config.universe, logger],
+            id='universe_refresh',
+            name='Universe Refresh',
+            replace_existing=True
+        )
+        scheduler.start()
+        logger.info(f"Scheduled universe refresh every {refresh_hours} hour(s)")
         
         # Test database with sample entries
         logger.info("Creating sample entries for testing...")
