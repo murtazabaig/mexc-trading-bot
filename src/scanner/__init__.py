@@ -1,0 +1,1 @@
+"""Market scanner module for detecting trading signals."""

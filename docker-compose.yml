@@ -1,0 +1,64 @@
+# docker-compose.yml
+# MEXC Futures Signal Bot - Container Orchestration
+
+version: '3.8'
+
+services:
+  mexc-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mexc-futures-signal-bot
+    restart: unless-stopped
+
+    # Volume mounts for persistence
+    volumes:
+      - ./config/.env:/app/config/.env:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+
+    # Environment variables
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONPATH=/app/src
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # CPU and memory limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+
+    # Stop gracefully on SIGTERM
+    stop_grace_period: 30s
+
+networks:
+  default:
+    driver: bridge
+
+volumes:
+  data:
+  logs:
