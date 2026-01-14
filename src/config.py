@@ -1,7 +1,7 @@
 """Configuration management for MEXC Futures Signal Bot."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, List, Union
 
@@ -40,6 +40,49 @@ class TradingConfig(BaseModel):
     max_drawdown_pct: float = Field(default=10.0, gt=0)
 
 
+class UniverseConfig(BaseModel):
+    """Market universe filtering configuration."""
+    # Volume filter
+    min_volume_usd: float = Field(default=1_000_000, gt=0)
+    
+    # Spread filter (max bid-ask spread percentage)
+    max_spread_percent: float = Field(default=0.05, gt=0)
+    
+    # Exclusion patterns (stablecoins, leverage tokens, etc.)
+    exclude_patterns: List[str] = Field(
+        default_factory=lambda: [
+            "BUSD",       # BUSD stablecoin
+            "UPUSDT",     # Bull leverage tokens (e.g., BTCUP)
+            "DOWNUSDT",   # Bear leverage tokens (e.g., BTCDOWN)
+            "BEAR",       # Bear tokens
+            "BULL",       # Bull tokens
+            "3L$",        # 3x leverage long (e.g., BTC3L)
+            "3S$",        # 3x leverage short (e.g., BTC3S)
+            "5L$",        # 5x leverage long (e.g., BTC5L)
+            "5S$",        # 5x leverage short (e.g., BTC5S)
+        ]
+    )
+    
+    # Explicit symbol exclusions (including stablecoins)
+    exclude_symbols: List[str] = Field(
+        default_factory=lambda: [
+            "USDTUSDT"   # USDT perpetual against itself
+        ]
+    )
+    
+    # Minimum order size
+    min_notional: float = Field(default=10, gt=0)
+    
+    # Minimum price
+    min_price: float = Field(default=0.0001, gt=0)
+    
+    # Maximum price (optional)
+    max_price: Optional[float] = Field(default=None)
+    
+    # Refresh interval in hours
+    refresh_interval_hours: float = Field(default=1.0, gt=0)
+
+
 @dataclass(frozen=True)
 class Config:
     """Main configuration container for the bot."""
@@ -65,6 +108,9 @@ class Config:
     
     # Trading Configuration
     trading: TradingConfig = Field(default_factory=TradingConfig)
+    
+    # Universe Configuration
+    universe: UniverseConfig = Field(default_factory=UniverseConfig)
     
     # Application Settings
     environment: str = "production"
@@ -141,6 +187,28 @@ class Config:
         
         config_data["trading"] = TradingConfig(**trading_config_data)
         
+        # Universe Configuration
+        universe_config_data = {}
+        for key in ["min_volume_usd", "max_spread_percent", "min_notional", "min_price", "max_price", "refresh_interval_hours"]:
+            env_key = f"UNIVERSE_{key.upper()}"
+            if value := os.getenv(env_key):
+                if key == "exclude_patterns" or key == "exclude_symbols":
+                    # List handling
+                    universe_config_data[key] = [item.strip() for item in value.split(",")]
+                elif key == "max_price" and value.lower() == "none":
+                    universe_config_data[key] = None
+                else:
+                    universe_config_data[key] = float(value)
+        
+        # Handle list-type fields
+        if exclude_patterns := os.getenv("UNIVERSE_EXCLUDE_PATTERNS"):
+            universe_config_data["exclude_patterns"] = [p.strip() for p in exclude_patterns.split(",")]
+        
+        if exclude_symbols := os.getenv("UNIVERSE_EXCLUDE_SYMBOLS"):
+            universe_config_data["exclude_symbols"] = [s.strip() for s in exclude_symbols.split(",")]
+        
+        config_data["universe"] = UniverseConfig(**universe_config_data)
+        
         return cls(**config_data)
     
     def validate(self) -> None:
@@ -188,3 +256,6 @@ class Config:
         
         if isinstance(self.trading, dict):
             object.__setattr__(self, "trading", TradingConfig(**self.trading))
+        
+        if isinstance(self.universe, dict):
+            object.__setattr__(self, "universe", UniverseConfig(**self.universe))
