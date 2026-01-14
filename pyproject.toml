@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mexc-futures-signal-bot"
+version = "0.1.0"
+description = "Advanced trading signal bot for MEXC futures markets"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "MEXC Trading Bot", email = "bot@example.com"},
+]
+keywords = ["trading", "mexc", "futures", "signals", "bot"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+    "python-dotenv==1.0.0",
+    "ccxt==4.1.45",
+    "apscheduler==3.10.4",
+    "loguru==0.7.2",
+    "aiohttp==3.9.3",
+    "python-telegram-bot==20.8",
+    "pydantic==2.5.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==7.4.4",
+    "pytest-asyncio==0.23.3",
+    "black==23.12.1",
+    "flake8==7.0.0",
+    "mypy==1.8.0",
+    "pre-commit==3.6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/mexc-futures-signal-bot"
+Repository = "https://github.com/yourusername/mexc-futures-signal-bot"
+
+[project.scripts]
+mexc-bot = "src.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

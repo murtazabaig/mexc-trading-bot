@@ -1,0 +1,1 @@
+"""Test suite for MEXC Futures Signal Bot."""
