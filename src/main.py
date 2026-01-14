@@ -127,6 +127,67 @@ async def async_main(args: argparse.Namespace, config: Config) -> int:
         scheduler.start()
         logger.info(f"Scheduled universe refresh every {refresh_hours} hour(s)")
         
+        # Test technical indicators with sample data
+        logger.info("Testing technical indicators...")
+        try:
+            from .indicators import ema, rsi, atr, atr_percent, vwap, volume_zscore, adx
+            
+            # Sample datasets for testing
+            test_datasets = [
+                {
+                    "name": "BTC trending up",
+                    "highs": [47000, 47500, 47800, 48200, 48500, 48800, 49100, 49400, 49700, 50000],
+                    "lows": [46500, 47100, 47400, 47800, 48100, 48400, 48700, 49000, 49300, 49600],
+                    "closes": [47200, 47650, 48100, 47950, 48420, 48600, 48750, 49050, 49200, 49380],
+                    "volumes": [1250, 1180, 1420, 980, 1350, 1100, 1200, 1450, 1380, 1150]
+                },
+                {
+                    "name": "ETH sideways movement", 
+                    "highs": [3000, 3010, 3005, 3015, 3008, 3012, 3006, 3014, 3009, 3011],
+                    "lows": [2990, 2995, 2992, 2998, 2994, 2996, 2993, 2997, 2995, 2997],
+                    "closes": [2995, 3002, 2998, 3006, 3001, 3008, 2999, 3009, 3003, 3005],
+                    "volumes": [5000, 5200, 4800, 5500, 5100, 5300, 4900, 5400, 5200, 5100]
+                },
+                {
+                    "name": "High volatility ADA",
+                    "highs": [0.5, 0.52, 0.48, 0.55, 0.47, 0.58, 0.45, 0.60, 0.44, 0.62],
+                    "lows": [0.48, 0.49, 0.46, 0.50, 0.45, 0.52, 0.43, 0.54, 0.42, 0.56],
+                    "closes": [0.49, 0.51, 0.47, 0.53, 0.46, 0.56, 0.44, 0.58, 0.43, 0.60],
+                    "volumes": [100000, 120000, 95000, 110000, 90000, 130000, 85000, 125000, 80000, 115000]
+                }
+            ]
+            
+            for i, dataset in enumerate(test_datasets, 1):
+                logger.info(f"Dataset {i}: {dataset['name']}")
+                
+                try:
+                    # Calculate all indicators
+                    ema_14 = ema(dataset['closes'], 14)
+                    rsi_14 = rsi(dataset['closes'], 14)
+                    atr_14 = atr(dataset['highs'], dataset['lows'], dataset['closes'], 14)
+                    atr_pct_14 = atr_percent(dataset['highs'], dataset['lows'], dataset['closes'], 14)
+                    vwap_val = vwap(dataset['highs'], dataset['lows'], dataset['closes'], dataset['volumes'])
+                    vol_zscore = volume_zscore(dataset['volumes'], 20)
+                    adx_14 = adx(dataset['highs'], dataset['lows'], 14)
+                    
+                    logger.info(f"  EMA(14): {ema_14:.4f}")
+                    logger.info(f"  RSI(14): {rsi_14:.2f}")
+                    logger.info(f"  ATR(14): {atr_14:.4f}")
+                    logger.info(f"  ATR%: {atr_pct_14:.2f}%")
+                    logger.info(f"  VWAP: {vwap_val:.4f}")
+                    logger.info(f"  Volume Z-Score: {vol_zscore:.2f}")
+                    logger.info(f"  ADX(14): {adx_14:.2f}")
+                    
+                except Exception as e:
+                    logger.error(f"  Error calculating indicators for dataset {i}: {e}")
+            
+            logger.info("Indicator testing completed successfully")
+            
+        except ImportError as e:
+            logger.error(f"Could not import indicators module: {e}")
+        except Exception as e:
+            logger.error(f"Error in indicator testing: {e}")
+
         # Test database with sample entries
         logger.info("Creating sample entries for testing...")
         
