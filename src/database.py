@@ -108,6 +108,13 @@ def create_schema(conn: sqlite3.Connection):
             FOREIGN KEY(signal_id) REFERENCES signals(id)
         );
         """)
+
+        # heartbeats table for uptime tracking
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS heartbeats (
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
         
     logger.info("Database schema verified/created.")
 
@@ -226,3 +233,50 @@ def query_active_warnings(conn: sqlite3.Connection, hours: int = 24) -> List[Dic
         d['metadata'] = json.loads(d['metadata']) if d.get('metadata') else {}
         results.append(d)
     return results
+
+def query_signals_by_date(conn: sqlite3.Connection, date: str) -> List[Dict[str, Any]]:
+    """Query all signals for a specific date (YYYY-MM-DD)."""
+    query = "SELECT * FROM signals WHERE date(timestamp) = ? ORDER BY timestamp ASC"
+    cursor = conn.execute(query, (date,))
+    rows = cursor.fetchall()
+    results = []
+    for row in rows:
+        d = dict(row)
+        d['reason'] = json.loads(d['reason']) if d.get('reason') else {}
+        d['metadata'] = json.loads(d['metadata']) if d.get('metadata') else {}
+        results.append(d)
+    return results
+
+def query_warnings_by_date(conn: sqlite3.Connection, date: str) -> List[Dict[str, Any]]:
+    """Query all warnings for a specific date (YYYY-MM-DD)."""
+    query = "SELECT * FROM warnings WHERE date(timestamp) = ? ORDER BY timestamp ASC"
+    cursor = conn.execute(query, (date,))
+    rows = cursor.fetchall()
+    results = []
+    for row in rows:
+        d = dict(row)
+        d['metadata'] = json.loads(d['metadata']) if d.get('metadata') else {}
+        results.append(d)
+    return results
+
+def query_closed_positions_by_date(conn: sqlite3.Connection, date: str) -> List[Dict[str, Any]]:
+    """Query all closed positions for a specific date (YYYY-MM-DD)."""
+    query = "SELECT * FROM paper_positions WHERE status = 'CLOSED' AND date(exit_time) = ? ORDER BY exit_time ASC"
+    cursor = conn.execute(query, (date,))
+    rows = cursor.fetchall()
+    return [dict(row) for row in rows]
+
+def query_uptime(conn: sqlite3.Connection, date: str) -> float:
+    """Calculate total uptime in hours for a specific date (YYYY-MM-DD)."""
+    query = "SELECT count(*) as count FROM heartbeats WHERE date(timestamp) = ?"
+    cursor = conn.execute(query, (date,))
+    result = cursor.fetchone()
+    if result:
+        # Assuming heartbeat every minute
+        return result['count'] / 60.0
+    return 0.0
+
+def record_heartbeat(conn: sqlite3.Connection):
+    """Record a heartbeat to track uptime."""
+    with transaction(conn):
+        conn.execute("INSERT INTO heartbeats DEFAULT VALUES")

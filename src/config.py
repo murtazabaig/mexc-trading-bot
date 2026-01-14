@@ -91,6 +91,7 @@ class Config:
     telegram_bot_token: str
     telegram_admin_chat_id: str
     telegram_polling_timeout: int = 30
+    daily_report_time: str = "00:00"
     
     # MEXC API Configuration (optional for public endpoints)
     mexc_api_key: Optional[str] = None
@@ -163,6 +164,7 @@ class Config:
             "log_level": os.getenv("LOG_LEVEL", "INFO"),
             "environment": os.getenv("ENVIRONMENT", "production"),
             "debug": os.getenv("DEBUG", "false").lower() == "true",
+            "daily_report_time": os.getenv("DAILY_REPORT_TIME", "00:00"),
         })
         
         # Signal Configuration

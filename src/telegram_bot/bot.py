@@ -104,6 +104,7 @@ Welcome! I'm your advanced trading signal assistant.
 /help - Show all commands
 /top - Top signals by confidence
 /symbol <COIN> - Analyze specific symbol
+/report [date] - Daily performance summary
 /scanstart - Enable market scanning
 /scanstop - Disable market scanning
 
@@ -126,6 +127,7 @@ This bot is in {'*TEST MODE*' if 'test' in str(self.bot_token) else '*LIVE MODE*
 📊 *Status & Monitoring:*
 /status - Bot health and statistics
 /top - Show top 5 signals by confidence
+/report [date] - Daily performance summary
 
 🔍 *Symbol Analysis:*
 /symbol <COIN> - Analyze specific symbol
@@ -170,6 +172,42 @@ Example: /symbol BTCUSDT
         )
         
         await update.message.reply_text(status_text, parse_mode='Markdown')
+
+    @_admin_only
+    async def report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /report command - show daily summary.
+        
+        Args:
+            update: Telegram update object
+            context: Context object
+        """
+        from datetime import timedelta
+        date = context.args[0] if context.args else (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        # Validate date format
+        try:
+            datetime.strptime(date, '%Y-%m-%d')
+        except ValueError:
+            await update.message.reply_text("❌ Invalid date format. Please use YYYY-MM-DD.\nExample: /report 2025-01-15")
+            return
+
+        if not self.db_conn:
+            await update.message.reply_text("❌ Database not available")
+            return
+            
+        try:
+            from ..reporting.summarizer import ReportGenerator
+            from ..reporting.formatters import format_daily_summary
+            
+            generator = ReportGenerator()
+            summary = await generator.generate_daily_summary(self.db_conn, date, self.universe_size)
+            
+            report_text = format_daily_summary(summary)
+            await update.message.reply_text(report_text, parse_mode='Markdown')
+            
+        except Exception as e:
+            logger.error(f"Error generating report for {date}: {e}")
+            await update.message.reply_text(f"❌ Error generating report for {date}. Please try again.")
     
     @_admin_only
     async def top(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -372,6 +410,7 @@ Example: /symbol BTCUSDT
         self.application.add_handler(CommandHandler("status", self.status))
         self.application.add_handler(CommandHandler("top", self.top))
         self.application.add_handler(CommandHandler("symbol", self.symbol))
+        self.application.add_handler(CommandHandler("report", self.report))
         self.application.add_handler(CommandHandler("scanstart", self.scanstart))
         self.application.add_handler(CommandHandler("scanstop", self.scanstop))
         
