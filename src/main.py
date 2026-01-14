@@ -276,6 +276,14 @@ async def async_main(args: argparse.Namespace, config: Config) -> int:
                 except Exception as e:
                     logger.error(f"Failed to schedule dispatch jobs: {e}")
                 
+                # Schedule reporting jobs
+                try:
+                    from .jobs.daily_report import create_reporting_jobs
+                    create_reporting_jobs(scheduler, telegram_bot_instance, conn, config, logger)
+                    logger.info("Reporting jobs scheduled")
+                except Exception as e:
+                    logger.error(f"Failed to schedule reporting jobs: {e}")
+                
             else:
                 logger.warning("Telegram bot failed to start - continuing without bot functionality")
                 telegram_bot_instance = None
