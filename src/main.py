@@ -234,6 +234,59 @@ async def async_main(args: argparse.Namespace, config: Config) -> int:
             snapshot_id = insert_params_snapshot(conn, config_dict)
             logger.info(f"Config snapshot inserted with ID: {snapshot_id}")
 
+        # Initialize and start Telegram bot
+        logger.info("Initializing Telegram bot...")
+        try:
+            from .telegram_bot import MexcSignalBot
+            
+            # Create bot instance
+            telegram_bot = MexcSignalBot(
+                bot_token=config.telegram_bot_token,
+                admin_chat_id=config.telegram_admin_chat_id,
+                polling_timeout=config.telegram_polling_timeout
+            )
+            
+            # Set bot dependencies
+            telegram_bot.set_database_connection(conn)
+            telegram_bot.set_universe_size(len(filtered_markets))
+            telegram_bot.set_mode("active")
+            
+            # Start bot in background task
+            async def run_telegram_bot():
+                try:
+                    await telegram_bot.start_polling()
+                    return telegram_bot
+                except Exception as e:
+                    logger.error(f"Failed to start Telegram bot: {e}")
+                    return None
+            
+            # Run bot startup
+            bot_task = asyncio.create_task(run_telegram_bot())
+            telegram_bot_instance = await bot_task
+            
+            if telegram_bot_instance:
+                logger.success("🤖 Telegram bot started successfully")
+                logger.info(f"Bot listening for commands from chat ID: {config.telegram_admin_chat_id}")
+                
+                # Schedule signal dispatch jobs
+                try:
+                    from .jobs.signal_dispatch import create_signal_dispatch_jobs
+                    create_signal_dispatch_jobs(scheduler, telegram_bot_instance, conn, logger)
+                    logger.info("Signal dispatch jobs scheduled")
+                except Exception as e:
+                    logger.error(f"Failed to schedule dispatch jobs: {e}")
+                
+            else:
+                logger.warning("Telegram bot failed to start - continuing without bot functionality")
+                telegram_bot_instance = None
+                
+        except ImportError as e:
+            logger.error(f"Could not import Telegram bot module: {e}")
+            telegram_bot_instance = None
+        except Exception as e:
+            logger.error(f"Error initializing Telegram bot: {e}")
+            telegram_bot_instance = None
+
         logger.info("MEXC Futures Signal Bot is running!")
         logger.info("Press Ctrl+C to stop")
         
@@ -241,11 +294,11 @@ async def async_main(args: argparse.Namespace, config: Config) -> int:
         # For now, we'll just wait if not in a test-like run
         # await asyncio.Event().wait()
         
-        return 0
+        return 0, telegram_bot_instance if 'telegram_bot_instance' in locals() else None
         
     except Exception as e:
         logger.exception(f"Fatal error in async_main: {e}")
-        return 1
+        return 1, None
 
 
 def main() -> int:
@@ -281,7 +334,7 @@ def main() -> int:
     
     # Run async main
     try:
-        exit_code = asyncio.run(async_main(args, config))
+        exit_code, telegram_bot_instance = asyncio.run(async_main(args, config))
         return exit_code
     except KeyboardInterrupt:
         logger.info("Main process interrupted by user")

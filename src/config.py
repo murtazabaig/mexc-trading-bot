@@ -90,6 +90,7 @@ class Config:
     # Telegram Configuration (required - no defaults)
     telegram_bot_token: str
     telegram_admin_chat_id: str
+    telegram_polling_timeout: int = 30
     
     # MEXC API Configuration (optional for public endpoints)
     mexc_api_key: Optional[str] = None
