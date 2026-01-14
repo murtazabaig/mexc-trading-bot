@@ -2,44 +2,29 @@
 
 import json
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 import sys
 
 from loguru import logger
 
-
 class JSONLFormatter:
     """Custom formatter for JSONL (JSON Lines) structured logging."""
     
-    def __init__(self, include_timestamp: bool = True, include_level: bool = True, include_module: bool = True):
-        self.include_timestamp = include_timestamp
-        self.include_level = include_level
-        self.include_module = include_module
-    
     def format(self, record: Dict[str, Any]) -> str:
         """Format log record as JSONL."""
-        log_entry = {}
+        log_entry = {
+            "timestamp": record["time"].isoformat(),
+            "level": record["level"].name,
+            "module": record["name"],
+            "function": record["function"],
+            "message": record["message"],
+        }
         
-        # Add timestamp
-        if self.include_timestamp:
-            log_entry["timestamp"] = record["time"].isoformat()
-        
-        # Add severity level
-        if self.include_level:
-            log_entry["level"] = record["level"].name
-        
-        # Add module and function context
-        if self.include_module:
-            log_entry["module"] = record["name"]
-            log_entry["function"] = record["function"]
-            log_entry["line"] = record["line"]
-        
-        # Add message
-        log_entry["message"] = record["message"]
-        
-        # Add any extra fields
+        # Add any extra fields as 'context'
         if record.get("extra"):
-            log_entry.update(record["extra"])
+            log_entry["context"] = record["extra"]
+        else:
+            log_entry["context"] = {}
         
         # Add exception info if present
         if record["exception"]:
@@ -48,28 +33,18 @@ class JSONLFormatter:
                 "value": str(record["exception"].value)
             }
         
-        return json.dumps(log_entry, sort_keys=True)
+        return json.dumps(log_entry, sort_keys=True).replace("{", "{{").replace("}", "}}") + "\n"
 
 
-def setup_logger(
-    log_directory: Optional[Path] = None,
-    log_level: str = "INFO",
-    log_filename: str = "bot.log"
-) -> None:
+def setup_logging(log_dir: str = "logs", debug: bool = False) -> None:
     """
     Configure logger with JSONL structured logging, rotation, and multiple handlers.
     
     Args:
-        log_directory: Directory for log files. Defaults to './logs/'
-        log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        log_filename: Base filename for log files
+        log_dir: Directory for log files. Defaults to 'logs'
+        debug: Whether to enable debug logging
     """
-    
-    if log_directory is None:
-        log_directory = Path("logs")
-    
-    # Ensure log directory exists
-    log_directory = Path(log_directory)
+    log_directory = Path(log_dir)
     log_directory.mkdir(parents=True, exist_ok=True)
     
     # Remove default handlers
@@ -78,12 +53,14 @@ def setup_logger(
     # Create formatter instance
     json_formatter = JSONLFormatter()
     
-    # Console handler with colorized output
+    log_level = "DEBUG" if debug else "INFO"
+    
+    # Console handler with colorized output (human-readable)
     logger.add(
         sink=sys.stdout,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
                "<level>{level: <8}</level> | "
-               "<cyan>{module}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
+               "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
                "<level>{message}</level>",
         level=log_level,
         colorize=True,
@@ -91,25 +68,12 @@ def setup_logger(
         diagnose=True,
     )
     
-    # File handler for info and above logs
+    # File handler: logs/bot.log with daily rotation (JSONL structured logging)
     logger.add(
-        sink=log_directory / log_filename,
+        sink=log_directory / "bot.log",
         format=json_formatter.format,
-        level="INFO",
-        rotation="500 MB",  # Rotate at 500MB
-        retention="10 days",  # Keep logs for 10 days
-        compression="zip",  # Compress rotated logs
-        encoding="utf-8",
-        backtrace=True,
-        diagnose=True,
-    )
-    
-    # File handler for error logs only
-    logger.add(
-        sink=log_directory / "errors.log",
-        format=json_formatter.format,
-        level="ERROR",
-        rotation="100 MB",
+        level=log_level,
+        rotation="00:00",  # Daily rotation at midnight
         retention="30 days",
         compression="zip",
         encoding="utf-8",
@@ -117,36 +81,11 @@ def setup_logger(
         diagnose=True,
     )
     
-    # File handler for debug logs (only if debug enabled)
-    if log_level.upper() == "DEBUG":
-        logger.add(
-            sink=log_directory / "debug.log",
-            format=json_formatter.format,
-            level="DEBUG",
-            rotation="200 MB",
-            retention="5 days",
-            compression="zip",
-            encoding="utf-8",
-            backtrace=True,
-            diagnose=True,
-        )
-    
-    logger.info(f"Logger initialized with level: {log_level}")
-    logger.info(f"Log directory: {log_directory.resolve()}")
+    logger.info(f"Logging initialized. Level: {log_level}, Directory: {log_directory}")
 
 
-def get_logger():
-    """Get the configured logger instance."""
+def get_logger(name: Optional[str] = None):
+    """Get the configured logger instance, optionally bound with a name."""
+    if name:
+        return logger.bind(name=name)
     return logger
-
-
-# Default formatter configuration for use in other modules
-def get_context_logger(**context):
-    """Get a logger with additional context fields."""
-    return logger.bind(**context)
-
-
-# Module-level logger
-def get_module_logger(name: str):
-    """Get a logger with module context."""
-    return logger.bind(module=name)
