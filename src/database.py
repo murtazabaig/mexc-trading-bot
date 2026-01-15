@@ -98,6 +98,7 @@ def create_schema(conn: sqlite3.Connection):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             signal_id INTEGER NOT NULL,
             status TEXT,  -- OPEN/CLOSED
+            size REAL,
             entry_price REAL,
             entry_time DATETIME,
             exit_price REAL,

@@ -299,9 +299,19 @@ async def async_main(args: argparse.Namespace, config: Config) -> int:
         logger.info("Initializing market scanner...")
         try:
             from .jobs.scanner import create_scanner_job
+            from .portfolio.manager import PortfolioManager
+            
+            # Initialize Portfolio Manager
+            logger.info("Initializing portfolio manager...")
+            portfolio_manager = PortfolioManager(
+                config=config,
+                db_conn=conn,
+                exchange=exchange
+            )
+            logger.success("💼 Portfolio manager initialized successfully")
             
             # Create scanner job
-            scanner = create_scanner_job(exchange, conn, config.__dict__, filtered_markets)
+            scanner = create_scanner_job(exchange, conn, config.__dict__, filtered_markets, portfolio_manager)
             scanner.set_scheduler(scheduler)
             
             # Start scanner
@@ -310,7 +320,7 @@ async def async_main(args: argparse.Namespace, config: Config) -> int:
             logger.info("Scanner running every 5 minutes for signal generation")
             
         except ImportError as e:
-            logger.error(f"Could not import scanner module: {e}")
+            logger.error(f"Could not import scanner/portfolio module: {e}")
             scanner = None
         except Exception as e:
             logger.error(f"Error initializing market scanner: {e}")
