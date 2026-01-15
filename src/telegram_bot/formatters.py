@@ -1,10 +1,19 @@
 """Message formatting utilities for MEXC Futures Signal Bot."""
 
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 
-def format_status(uptime_seconds: int, last_scan: Optional[datetime], universe_size: int, mode: str) -> str:
+def format_status(
+    uptime_seconds: int, 
+    last_scan: Optional[datetime], 
+    universe_size: int, 
+    mode: str,
+    scanner_stats: Optional[Dict[str, Any]] = None,
+    warning_stats: Optional[Dict[str, Any]] = None,
+    portfolio_stats: Optional[Dict[str, Any]] = None,
+    pause_state: Optional[Any] = None
+) -> str:
     """Format bot status message.
     
     Args:
@@ -12,6 +21,10 @@ def format_status(uptime_seconds: int, last_scan: Optional[datetime], universe_s
         last_scan: Last scan timestamp
         universe_size: Number of symbols in universe
         mode: Bot mode (active, paused, scanning)
+        scanner_stats: Statistics from scanner
+        warning_stats: Statistics from warning detector
+        portfolio_stats: Statistics from portfolio manager
+        pause_state: Pause state object
     
     Returns:
         Formatted status message
@@ -28,18 +41,31 @@ def format_status(uptime_seconds: int, last_scan: Optional[datetime], universe_s
         uptime_str = f"{seconds}s"
     
     # Format last scan
-    if last_scan:
+    def format_time_ago(dt: Any) -> str:
+        if not dt:
+            return "Never"
+        
+        if isinstance(dt, str):
+            try:
+                dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
+            except:
+                return "Unknown"
+        
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+            
         now = datetime.now(timezone.utc)
-        diff = now - last_scan
+        diff = now - dt
+        if diff.total_seconds() < 0: # Future
+            return "just now"
         if diff.total_seconds() < 60:
-            last_scan_str = f"{int(diff.total_seconds())} seconds ago"
+            return f"{int(diff.total_seconds())}s ago"
         elif diff.total_seconds() < 3600:
-            last_scan_str = f"{int(diff.total_seconds() / 60)} minutes ago"
+            return f"{int(diff.total_seconds() / 60)}m ago"
         else:
-            hours_ago = int(diff.total_seconds() / 3600)
-            last_scan_str = f"{hours_ago} hours ago"
-    else:
-        last_scan_str = "Never"
+            return f"{int(diff.total_seconds() / 3600)}h ago"
+
+    last_scan_str = format_time_ago(last_scan)
     
     # Mode emoji
     mode_emoji = {
@@ -49,10 +75,44 @@ def format_status(uptime_seconds: int, last_scan: Optional[datetime], universe_s
         "error": "❌"
     }.get(mode.lower(), "📊")
     
+    # Scanner status
+    scanner_line = "Scanner: offline"
+    if scanner_stats:
+        last_run = format_time_ago(scanner_stats.get('last_scan_time'))
+        signals = scanner_stats.get('total_signals_created', 0)
+        errors = scanner_stats.get('total_errors', 0)
+        scanner_line = f"Scanner: last run {last_run} | signals generated: {signals} | errors: {errors}"
+    
+    # Warning status
+    warning_line = "Warnings: offline"
+    if warning_stats:
+        last_run = format_time_ago(warning_stats.get('last_check_time'))
+        # We don't have separate counts for CRITICAL/WARNING in stats yet, but we can display total
+        warnings = warning_stats.get('warnings_generated', 0)
+        warning_line = f"Warnings: last run {last_run} | total warnings: {warnings}"
+    
+    # Portfolio status
+    portfolio_line = "Portfolio: offline"
+    if portfolio_stats:
+        positions = portfolio_stats.get('active_positions_count', 0)
+        today_pnl = portfolio_stats.get('today_pnl_r', 0.0)
+        limit_rem = portfolio_stats.get('daily_loss_limit_remaining_r', 0.0)
+        portfolio_line = f"Portfolio: active_positions: {positions} | today_pnl: {today_pnl:.1f}R | daily_loss_limit_remaining: {limit_rem:.1f}R"
+    
+    # Pause state
+    pause_status = "ACTIVE (no pause)"
+    if pause_state and pause_state.is_paused():
+        pause_status = f"PAUSED ({pause_state.reason()})"
+    
+    portfolio_conn = "connected" if portfolio_stats else "disconnected"
+    
     return f"""🤖 *Bot Status*
+{scanner_line}
+{warning_line}
+{portfolio_line}
+Pause state: {pause_status} | portfolio_manager: {portfolio_conn} | universe: {universe_size} symbols
+
 ⏱ Uptime: {uptime_str}
-🔍 Last Scan: {last_scan_str}
-🌍 Universe: {universe_size:,} symbols
 📊 Mode: {mode_emoji} {mode.title()}"""
 
 

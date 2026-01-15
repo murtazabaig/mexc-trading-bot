@@ -1,5 +1,6 @@
 """Market universe management module."""
 
+from .manager import UniverseManager
 from .market_loader import (
     load_mexc_futures_markets,
     clear_market_cache,
@@ -18,6 +19,7 @@ from .filters import (
 )
 
 __all__ = [
+    "UniverseManager",
     # Market loader
     "load_mexc_futures_markets",
     "clear_market_cache",

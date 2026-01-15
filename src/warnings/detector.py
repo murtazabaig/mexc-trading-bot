@@ -22,7 +22,7 @@ class WarningDetector:
     """Detects market anomalies and risk conditions in real-time."""
     
     def __init__(self, exchange: ccxt.mexc, db_conn, config: Dict[str, Any], 
-                 universe: Dict[str, Any]):
+                 universe: Dict[str, Any], pause_state: Any = None):
         """Initialize warning detector.
         
         Args:
@@ -30,11 +30,13 @@ class WarningDetector:
             db_conn: Database connection
             config: Configuration dictionary
             universe: Market universe dictionary
+            pause_state: Pause state singleton
         """
         self.exchange = exchange
         self.db_conn = db_conn
         self.config = config
         self.universe = universe
+        self.pause_state = pause_state
         
         # Set logger
         self.logger = logger
@@ -87,7 +89,7 @@ class WarningDetector:
         # Schedule the detection job every 5 minutes (synchronized with scanner)
         if self.scheduler:
             self.scheduler.add_job(
-                self._check_all_warnings,
+                self.run_detection,
                 'interval',
                 minutes=5,
                 id='warning_detector',
@@ -97,7 +99,7 @@ class WarningDetector:
             self.logger.info("Warning detector job scheduled to run every 5 minutes")
         
         # Run initial check
-        await self._check_all_warnings()
+        await self.run_detection()
     
     async def stop_detection(self):
         """Stop the continuous warning detection process."""
@@ -112,7 +114,7 @@ class WarningDetector:
         
         self.logger.info("Warning detector stopped")
     
-    async def _check_all_warnings(self):
+    async def run_detection(self):
         """Main warning detection function - checks all warning conditions."""
         check_start = time.time()
         self.stats['last_check_time'] = datetime.utcnow()
@@ -634,6 +636,13 @@ class WarningDetector:
             warning: Warning dictionary
         """
         try:
+            # Check for critical severity and pause if necessary
+            if warning.get('severity') == 'CRITICAL' and self.pause_state:
+                reason = f"CRITICAL_WARNING: {warning['type']} - {warning['message']}"
+                self.pause_state.pause(reason)
+                warning['action_taken'] = 'PAUSED_SIGNALS'
+                self.logger.warning(f"System PAUSED due to critical warning: {reason}")
+
             # Store in database
             warning_id = await self._store_warning_in_database(warning)
             
