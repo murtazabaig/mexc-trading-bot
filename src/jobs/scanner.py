@@ -151,7 +151,8 @@ class ScannerJob:
     """Continuous scanner job for generating trading signals."""
     
     def __init__(self, exchange: ccxt.mexc, db_conn, config: Dict[str, Any], 
-                 universe: Dict[str, Any], portfolio_manager: Any = None):
+                 universe: Dict[str, Any], portfolio_manager: Any = None,
+                 pause_state: Any = None):
         """Initialize scanner job.
         
         Args:
@@ -160,12 +161,14 @@ class ScannerJob:
             config: Scanner configuration
             universe: Market universe dictionary
             portfolio_manager: Portfolio manager instance
+            pause_state: Pause state singleton
         """
         self.exchange = exchange
         self.db_conn = db_conn
         self.config = config
         self.universe = universe
         self.portfolio_manager = portfolio_manager
+        self.pause_state = pause_state
         
         # Initialize components
         self.cache = OHLCVCache(max_size=100)
@@ -214,7 +217,7 @@ class ScannerJob:
         # Schedule the scanner job every 5 minutes
         if self.scheduler:
             self.scheduler.add_job(
-                self._scan_all_symbols,
+                self.run_scan,
                 'interval',
                 minutes=5,
                 id='market_scanner',
@@ -224,7 +227,7 @@ class ScannerJob:
             self.logger.info("Scanner job scheduled to run every 5 minutes")
         
         # Run initial scan
-        await self._scan_all_symbols()
+        await self.run_scan()
     
     async def stop_scanning(self):
         """Stop the continuous scanning process."""
@@ -239,8 +242,12 @@ class ScannerJob:
         
         self.logger.info("Market scanner stopped")
     
-    async def _scan_all_symbols(self):
+    async def run_scan(self):
         """Main scanning function - processes all symbols in universe."""
+        if self.pause_state and self.pause_state.is_paused():
+            self.logger.info(f"Scan skipped: {self.pause_state.reason()}")
+            return
+
         scan_start = time.time()
         self.stats['last_scan_time'] = datetime.utcnow()
         
@@ -355,6 +362,11 @@ class ScannerJob:
             
             # Create signal if score meets threshold
             if score_result.get('meets_threshold', False) and score_result.get('score', 0) >= 7.0:
+                # Double check pause state before generating signal
+                if self.pause_state and self.pause_state.is_paused():
+                    self.logger.info(f"Signal generation paused: {self.pause_state.reason()}")
+                    return {'symbol': symbol, 'signal_created': False, 'reason': 'PAUSED'}
+
                 # Prepare signal data
                 signal_data = self._prepare_signal_data(symbol, processed_data, indicators, regime, score_result)
                 
@@ -363,6 +375,9 @@ class ScannerJob:
                     decision = await self.portfolio_manager.add_signal(signal_data)
                     
                     if decision.get('status') == 'APPROVED':
+                        # Signal is approved and already inserted by portfolio manager
+                        self.logger.info(f"Signal approved by portfolio for {symbol}")
+                        
                         # Open paper position
                         if 'signal_id' in decision:
                             signal_data['id'] = decision['signal_id']
@@ -375,6 +390,7 @@ class ScannerJob:
                             'decision': decision
                         }
                     else:
+                        self.logger.info(f"Signal rejected by portfolio for {symbol}: {decision.get('reason')}")
                         return {
                             'symbol': symbol,
                             'signal_created': False,
@@ -620,7 +636,8 @@ class ScannerJob:
 
 
 def create_scanner_job(exchange: ccxt.mexc, db_conn, config: Dict[str, Any], 
-                      universe: Dict[str, Any], portfolio_manager: Any = None) -> ScannerJob:
+                      universe: Dict[str, Any], portfolio_manager: Any = None,
+                      pause_state: Any = None) -> ScannerJob:
     """Create and configure a scanner job instance.
     
     Args:
@@ -629,6 +646,7 @@ def create_scanner_job(exchange: ccxt.mexc, db_conn, config: Dict[str, Any],
         config: Scanner configuration
         universe: Market universe dictionary
         portfolio_manager: Portfolio manager instance
+        pause_state: Pause state singleton
         
     Returns:
         Configured ScannerJob instance
@@ -640,7 +658,8 @@ def create_scanner_job(exchange: ccxt.mexc, db_conn, config: Dict[str, Any],
         db_conn=db_conn,
         config=scanner_config,
         universe=universe,
-        portfolio_manager=portfolio_manager
+        portfolio_manager=portfolio_manager,
+        pause_state=pause_state
     )
     
     logger.info(f"Scanner job created for {len(universe)} symbols")

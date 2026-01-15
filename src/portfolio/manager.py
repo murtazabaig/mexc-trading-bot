@@ -318,3 +318,16 @@ class PortfolioManager:
     def update_state(self):
         """Manually trigger a state reload from database."""
         self._load_state()
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get current portfolio statistics."""
+        self._check_day_boundary()
+        return {
+            "active_positions_count": len(self.active_positions),
+            "today_signals_count": self.signals_today_count,
+            "today_pnl_r": self.daily_pnl_r,
+            "daily_loss_limit_r": self.portfolio_config.daily_loss_limit_r,
+            "daily_loss_limit_remaining_r": self.portfolio_config.daily_loss_limit_r + self.daily_pnl_r,
+            "max_alerts_per_day": self.portfolio_config.max_alerts_per_day,
+            "alerts_remaining": self.portfolio_config.max_alerts_per_day - self.signals_today_count
+        }

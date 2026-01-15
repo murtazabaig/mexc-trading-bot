@@ -21,13 +21,14 @@ logger = get_logger(__name__)
 class MexcSignalBot:
     """Main Telegram bot class for signal distribution."""
     
-    def __init__(self, bot_token: str, admin_chat_id: str, polling_timeout: int = 30):
+    def __init__(self, bot_token: str, admin_chat_id: str, polling_timeout: int = 30, pause_state: Any = None):
         """Initialize the Telegram bot.
         
         Args:
             bot_token: Telegram bot token
             admin_chat_id: Admin chat ID for permission checking
             polling_timeout: Polling timeout in seconds
+            pause_state: Pause state singleton
         """
         self.bot_token = bot_token
         self.admin_chat_id = admin_chat_id
@@ -38,12 +39,32 @@ class MexcSignalBot:
         self.universe_size = 0
         self.mode = "active"
         
-        # Database connection (will be set by main.py)
+        # Components (will be set by main.py)
         self.db_conn = None
+        self.scanner = None
+        self.warning_detector = None
+        self.portfolio_manager = None
+        self.pause_state = pause_state
     
     def set_database_connection(self, conn):
         """Set the database connection for the bot."""
         self.db_conn = conn
+
+    def set_scanner(self, scanner):
+        """Set the scanner instance."""
+        self.scanner = scanner
+
+    def set_warning_detector(self, warning_detector):
+        """Set the warning detector instance."""
+        self.warning_detector = warning_detector
+
+    def set_portfolio_manager(self, portfolio_manager):
+        """Set the portfolio manager instance."""
+        self.portfolio_manager = portfolio_manager
+
+    def set_pause_state(self, pause_state):
+        """Set the pause state instance."""
+        self.pause_state = pause_state
     
     def set_universe_size(self, size: int):
         """Set the current universe size."""
@@ -164,11 +185,29 @@ Example: /symbol BTCUSDT
         # Calculate uptime
         uptime_seconds = int((datetime.now(timezone.utc) - self.start_time).total_seconds())
         
+        # Get stats from components
+        scanner_stats = self.scanner.get_stats() if self.scanner else None
+        warning_stats = self.warning_detector.get_stats() if self.warning_detector else None
+        portfolio_stats = self.portfolio_manager.get_stats() if self.portfolio_manager else None
+        
+        # Use last scan time from scanner if available
+        last_scan = self.last_scan_time
+        if scanner_stats and scanner_stats.get('last_scan_time'):
+            last_scan_val = scanner_stats.get('last_scan_time')
+            if isinstance(last_scan_val, str):
+                last_scan = datetime.fromisoformat(last_scan_val)
+            else:
+                last_scan = last_scan_val
+
         status_text = format_status(
             uptime_seconds=uptime_seconds,
-            last_scan=self.last_scan_time,
+            last_scan=last_scan,
             universe_size=self.universe_size,
-            mode=self.mode
+            mode=self.mode,
+            scanner_stats=scanner_stats,
+            warning_stats=warning_stats,
+            portfolio_stats=portfolio_stats,
+            pause_state=self.pause_state
         )
         
         await update.message.reply_text(status_text, parse_mode='Markdown')
@@ -295,13 +334,15 @@ Example: /symbol BTCUSDT
             update: Telegram update object
             context: Context object
         """
+        if self.pause_state:
+            self.pause_state.resume()
         self.set_mode("scanning")
         
         await update.message.reply_text(
-            "🔍 *Market Scanning Enabled*\\n\\n"
-            "✅ Scanner is now active\\n"
-            "📊 Monitoring all symbols for opportunities\\n"
-            "⚡ Signals will be sent automatically\\n\\n"
+            "🔍 *Market Scanning Enabled*\n\n"
+            "✅ Scanner is now active\n"
+            "📊 Monitoring all symbols for opportunities\n"
+            "⚡ Signals will be sent automatically\n\n"
             "Happy hunting! 🎯",
             parse_mode='Markdown'
         )
@@ -314,17 +355,45 @@ Example: /symbol BTCUSDT
             update: Telegram update object
             context: Context object
         """
+        if self.pause_state:
+            self.pause_state.pause("Stopped by user via Telegram")
         self.set_mode("paused")
         
         await update.message.reply_text(
-            "⏸️ *Market Scanning Paused*\\n\\n"
-            "🛑 Scanner has been stopped\\n"
-            "📊 No new signals will be generated\\n"
-            "🔄 Previous signals remain valid\\n\\n"
+            "⏸️ *Market Scanning Paused*\n\n"
+            "🛑 Scanner has been stopped\n"
+            "📊 No new signals will be generated\n"
+            "🔄 Previous signals remain valid\n\n"
             "Use /scanstart to resume scanning.",
             parse_mode='Markdown'
         )
     
+    async def send_message(self, chat_id: str, text: str, parse_mode: str = 'Markdown') -> bool:
+        """Send a generic message.
+        
+        Args:
+            chat_id: Telegram chat ID
+            text: Message text
+            parse_mode: Message parse mode
+            
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        try:
+            if self.application and self.application.bot:
+                await self.application.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode=parse_mode
+                )
+                return True
+            else:
+                logger.error("Bot application not initialized")
+                return False
+        except Exception as e:
+            logger.error(f"Error sending message: {e}")
+            return False
+
     async def send_signal(self, signal: Dict[str, Any]) -> bool:
         """Send signal message to admin chat.
         

@@ -125,6 +125,11 @@ class Config:
     # Universe Configuration
     universe: UniverseConfig = Field(default_factory=UniverseConfig)
     
+    # Interval Settings (seconds)
+    universe_refresh_interval_sec: int = 3600
+    scan_interval_sec: int = 300
+    warning_interval_sec: int = 300
+    
     # Application Settings
     environment: str = "production"
     debug: bool = False
@@ -176,6 +181,9 @@ class Config:
             "environment": os.getenv("ENVIRONMENT", "production"),
             "debug": os.getenv("DEBUG", "false").lower() == "true",
             "daily_report_time": os.getenv("DAILY_REPORT_TIME", "00:00"),
+            "universe_refresh_interval_sec": int(os.getenv("UNIVERSE_REFRESH_INTERVAL_SEC", "3600")),
+            "scan_interval_sec": int(os.getenv("SCAN_INTERVAL_SEC", "300")),
+            "warning_interval_sec": int(os.getenv("WARNING_INTERVAL_SEC", "300")),
         })
         
         # Signal Configuration
