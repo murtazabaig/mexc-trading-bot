@@ -124,7 +124,19 @@ def create_schema(conn: sqlite3.Connection):
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        
+
+        # processed_candles table for tracking closed candles to prevent look-ahead bias
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS processed_candles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            last_closed_ts INTEGER NOT NULL,
+            processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(symbol, timeframe)
+        );
+        """)
+
     logger.info("Database schema verified/created.")
 
 def insert_signal(conn: sqlite3.Connection, signal_dict: Dict[str, Any]) -> int:
@@ -289,3 +301,54 @@ def record_heartbeat(conn: sqlite3.Connection):
     """Record a heartbeat to track uptime."""
     with transaction(conn):
         conn.execute("INSERT INTO heartbeats DEFAULT VALUES")
+
+
+def get_last_processed_candle(conn: sqlite3.Connection, symbol: str, timeframe: str) -> int:
+    """Return the last processed candle timestamp for symbol/timeframe.
+
+    Args:
+        conn: Database connection
+        symbol: Trading symbol
+        timeframe: Timeframe (e.g., '1h', '5m', '4h')
+
+    Returns:
+        Last processed candle timestamp (ms) or 0 if not found
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT last_closed_ts FROM processed_candles WHERE symbol = ? AND timeframe = ?",
+        (symbol, timeframe)
+    )
+    row = cursor.fetchone()
+    return row[0] if row else 0
+
+
+def update_processed_candle(conn: sqlite3.Connection, symbol: str, timeframe: str, ts: int):
+    """Update the last processed candle timestamp.
+
+    Args:
+        conn: Database connection
+        symbol: Trading symbol
+        timeframe: Timeframe (e.g., '1h', '5m', '4h')
+        ts: Timestamp of the closed candle in milliseconds
+    """
+    with transaction(conn):
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO processed_candles (symbol, timeframe, last_closed_ts)
+               VALUES (?, ?, ?)
+               ON CONFLICT(symbol, timeframe) DO UPDATE SET
+               last_closed_ts = ?, processed_at = CURRENT_TIMESTAMP""",
+            (symbol, timeframe, ts, ts)
+        )
+
+
+def clear_processed_candles(conn: sqlite3.Connection):
+    """Clear all processed candles table - useful for testing or restart.
+
+    Args:
+        conn: Database connection
+    """
+    with transaction(conn):
+        conn.execute("DELETE FROM processed_candles")
+    logger.info("Processed candles table cleared")

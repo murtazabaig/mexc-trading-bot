@@ -9,7 +9,10 @@ from datetime import datetime, timedelta
 import json
 
 from src.jobs.scanner import ScannerJob, OHLCVCache, create_scanner_job
-from src.database import init_db, create_schema, query_recent_signals
+from src.database import (
+    init_db, create_schema, query_recent_signals,
+    get_last_processed_candle, update_processed_candle, clear_processed_candles
+)
 from src.regime import RegimeClassifier
 from src.scoring import ScoringEngine
 
@@ -424,6 +427,256 @@ class TestScannerIntegration:
         # Stop scanning
         await scanner.stop_scanning()
         assert scanner.running == False
+
+
+class TestCandleCloseStateTracking:
+    """Test candle-close state tracking to prevent look-ahead bias and duplicate signals."""
+
+    @pytest.fixture
+    def mock_exchange(self):
+        """Create a mock MEXC exchange."""
+        exchange = Mock(spec=ccxt.mexc)
+
+        def mock_fetch_ohlcv(symbol, timeframe, limit):
+            # Generate realistic OHLCV data
+            base_price = 47000 if "BTC" in symbol else (3000 if "ETH" in symbol else 1.0)
+            data = []
+
+            for i in range(limit):
+                timestamp = 1640995200000 + (i * 3600000)  # 1h intervals
+                price = base_price + (i * 10) + (i % 5) * 5  # Slight upward trend
+                high = price + 50
+                low = price - 50
+                open_price = price - 25
+                volume = 1000 + i * 10
+
+                data.append([timestamp, open_price, high, low, price, volume])
+
+            return data
+
+        exchange.fetch_ohlcv = AsyncMock(side_effect=mock_fetch_ohlcv)
+        return exchange
+
+    @pytest.mark.asyncio
+    async def test_get_last_closed_candle_ts(self, mock_exchange):
+        """Test extraction of last closed candle timestamp."""
+        test_universe = {"BTCUSDT": {"symbol": "BTC/USDT", "active": True}}
+        temp_db = sqlite3.connect(":memory:")
+        create_schema(temp_db)
+
+        config = {"scanner": {"min_score": 7.0, "max_score": 10.0}}
+        scanner = create_scanner_job(mock_exchange, temp_db, config, test_universe)
+
+        # Fetch OHLCV data
+        ohlcv = await scanner._fetch_ohlcv_data("BTCUSDT", "1h", limit=10)
+
+        # Get last closed candle timestamp
+        last_closed_ts = scanner._get_last_closed_candle_ts(ohlcv, "1h")
+
+        # Should return the second-to-last candle's timestamp (definitely closed)
+        assert last_closed_ts is not None
+        assert last_closed_ts == ohlcv[-2][0]
+
+        # Test with insufficient data
+        insufficient_ohlcv = ohlcv[:1]
+        last_closed_ts = scanner._get_last_closed_candle_ts(insufficient_ohlcv, "1h")
+        assert last_closed_ts is None
+
+    @pytest.mark.asyncio
+    async def test_candle_already_processed_skip(self, mock_exchange):
+        """Test that scanner skips symbols when candle was already processed."""
+        test_universe = {"BTCUSDT": {"symbol": "BTC/USDT", "active": True}}
+        temp_db = sqlite3.connect(":memory:")
+        create_schema(temp_db)
+
+        config = {"scanner": {"min_score": 7.0, "max_score": 10.0}}
+        scanner = create_scanner_job(mock_exchange, temp_db, config, test_universe)
+
+        # Fetch OHLCV data
+        ohlcv = await scanner._fetch_ohlcv_data("BTCUSDT", "1h", limit=10)
+        last_closed_ts = scanner._get_last_closed_candle_ts(ohlcv, "1h")
+
+        # Mark this candle as already processed
+        update_processed_candle(temp_db, "BTCUSDT", "1h", last_closed_ts)
+
+        # Verify it's marked as processed
+        retrieved_ts = get_last_processed_candle(temp_db, "BTCUSDT", "1h")
+        assert retrieved_ts == last_closed_ts
+
+        # Process symbol - should skip
+        result = await scanner._process_symbol("BTCUSDT")
+
+        assert result is not None
+        assert result['symbol'] == "BTCUSDT"
+        assert result['signal_created'] == False
+        assert result['reason'] == 'CANDLE_ALREADY_PROCESSED'
+        assert result['skipped'] == True
+
+    @pytest.mark.asyncio
+    async def test_new_candle_processed(self, mock_exchange):
+        """Test that scanner processes symbols when a new candle is detected."""
+        test_universe = {"BTCUSDT": {"symbol": "BTC/USDT", "active": True}}
+        temp_db = sqlite3.connect(":memory:")
+        create_schema(temp_db)
+
+        config = {"scanner": {"min_score": 7.0, "max_score": 10.0}}
+        scanner = create_scanner_job(mock_exchange, temp_db, config, test_universe)
+
+        # Fetch OHLCV data
+        ohlcv = await scanner._fetch_ohlcv_data("BTCUSDT", "1h", limit=10)
+        last_closed_ts = scanner._get_last_closed_candle_ts(ohlcv, "1h")
+
+        # Mark an older candle as processed
+        update_processed_candle(temp_db, "BTCUSDT", "1h", last_closed_ts - 3600000)
+
+        # Process symbol - should process new candle
+        result = await scanner._process_symbol("BTCUSDT")
+
+        assert result is not None
+        assert result['symbol'] == "BTCUSDT"
+        # Signal may or may not be created depending on score, but it should not be skipped
+        assert result.get('reason') != 'CANDLE_ALREADY_PROCESSED'
+
+        # Verify the new candle is now marked as processed if signal was created
+        if result.get('signal_created'):
+            retrieved_ts = get_last_processed_candle(temp_db, "BTCUSDT", "1h")
+            assert retrieved_ts == last_closed_ts
+
+    @pytest.mark.asyncio
+    async def test_processed_candle_tracking_multiple_timeframes(self):
+        """Test that processed candles are tracked independently per timeframe."""
+        temp_db = sqlite3.connect(":memory:")
+        create_schema(temp_db)
+
+        symbol = "BTCUSDT"
+        ts_1h = 1640995200000
+        ts_5m = 1640995200000
+        ts_4h = 1640995200000
+
+        # Update different timeframes
+        update_processed_candle(temp_db, symbol, "1h", ts_1h)
+        update_processed_candle(temp_db, symbol, "5m", ts_5m)
+        update_processed_candle(temp_db, symbol, "4h", ts_4h)
+
+        # Retrieve each independently
+        assert get_last_processed_candle(temp_db, symbol, "1h") == ts_1h
+        assert get_last_processed_candle(temp_db, symbol, "5m") == ts_5m
+        assert get_last_processed_candle(temp_db, symbol, "4h") == ts_4h
+
+    @pytest.mark.asyncio
+    async def test_update_processed_candle_overwrites(self):
+        """Test that update_processed_candle overwrites existing records."""
+        temp_db = sqlite3.connect(":memory:")
+        create_schema(temp_db)
+
+        symbol = "BTCUSDT"
+        timeframe = "1h"
+        ts1 = 1640995200000
+        ts2 = 1640998800000  # 1 hour later
+
+        # Insert first timestamp
+        update_processed_candle(temp_db, symbol, timeframe, ts1)
+        assert get_last_processed_candle(temp_db, symbol, timeframe) == ts1
+
+        # Update with new timestamp
+        update_processed_candle(temp_db, symbol, timeframe, ts2)
+        assert get_last_processed_candle(temp_db, symbol, timeframe) == ts2
+
+        # Ensure only one record exists
+        cursor = temp_db.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM processed_candles WHERE symbol = ? AND timeframe = ?",
+            (symbol, timeframe)
+        )
+        count = cursor.fetchone()[0]
+        assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_clear_processed_candles(self):
+        """Test that clear_processed_candles removes all records."""
+        temp_db = sqlite3.connect(":memory:")
+        create_schema(temp_db)
+
+        # Add some records
+        update_processed_candle(temp_db, "BTCUSDT", "1h", 1640995200000)
+        update_processed_candle(temp_db, "ETHUSDT", "1h", 1640995200000)
+        update_processed_candle(temp_db, "BTCUSDT", "5m", 1640995200000)
+
+        # Verify records exist
+        cursor = temp_db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM processed_candles")
+        count = cursor.fetchone()[0]
+        assert count == 3
+
+        # Clear all
+        clear_processed_candles(temp_db)
+
+        # Verify all cleared
+        cursor.execute("SELECT COUNT(*) FROM processed_candles")
+        count = cursor.fetchone()[0]
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_no_duplicate_signals_on_reprocess(self, mock_exchange):
+        """Test that re-running scanner on same closed candle does not generate duplicate signals."""
+        test_universe = {"BTCUSDT": {"symbol": "BTC/USDT", "active": True}}
+        temp_db = sqlite3.connect(":memory:")
+        create_schema(temp_db)
+
+        config = {"scanner": {"min_score": 7.0, "max_score": 10.0}}
+        scanner = create_scanner_job(mock_exchange, temp_db, config, test_universe)
+
+        # Process symbol first time
+        result1 = await scanner._process_symbol("BTCUSDT")
+
+        # Process symbol second time (should skip if candle already processed)
+        result2 = await scanner._process_symbol("BTCUSDT")
+
+        # If first run created a signal, second run should skip
+        if result1.get('signal_created'):
+            assert result2.get('signal_created') == False
+            assert result2.get('reason') == 'CANDLE_ALREADY_PROCESSED'
+
+    @pytest.mark.asyncio
+    async def test_get_last_processed_candle_returns_zero_when_not_found(self):
+        """Test that get_last_processed_candle returns 0 when no record exists."""
+        temp_db = sqlite3.connect(":memory:")
+        create_schema(temp_db)
+
+        # Query non-existent symbol
+        ts = get_last_processed_candle(temp_db, "NONEXISTENT", "1h")
+        assert ts == 0
+
+    @pytest.mark.asyncio
+    async def test_multiple_symbols_independent_tracking(self, mock_exchange):
+        """Test that processed candles are tracked independently per symbol."""
+        test_universe = {
+            "BTCUSDT": {"symbol": "BTC/USDT", "active": True},
+            "ETHUSDT": {"symbol": "ETH/USDT", "active": True}
+        }
+        temp_db = sqlite3.connect(":memory:")
+        create_schema(temp_db)
+
+        config = {"scanner": {"min_score": 7.0, "max_score": 10.0}}
+        scanner = create_scanner_job(mock_exchange, temp_db, config, test_universe)
+
+        # Fetch OHLCV for BTC
+        ohlcv_btc = await scanner._fetch_ohlcv_data("BTCUSDT", "1h", limit=10)
+        last_closed_ts_btc = scanner._get_last_closed_candle_ts(ohlcv_btc, "1h")
+
+        # Fetch OHLCV for ETH
+        ohlcv_eth = await scanner._fetch_ohlcv_data("ETHUSDT", "1h", limit=10)
+        last_closed_ts_eth = scanner._get_last_closed_candle_ts(ohlcv_eth, "1h")
+
+        # Mark BTC as processed
+        update_processed_candle(temp_db, "BTCUSDT", "1h", last_closed_ts_btc)
+
+        # BTC should be skipped, ETH should process
+        result_btc = await scanner._process_symbol("BTCUSDT")
+        result_eth = await scanner._process_symbol("ETHUSDT")
+
+        assert result_btc.get('reason') == 'CANDLE_ALREADY_PROCESSED'
+        assert result_eth.get('reason') != 'CANDLE_ALREADY_PROCESSED'
 
 
 if __name__ == "__main__":

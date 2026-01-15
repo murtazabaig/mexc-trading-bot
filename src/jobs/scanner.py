@@ -10,7 +10,7 @@ import math
 import ccxt
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from ..database import insert_signal, transaction
+from ..database import insert_signal, transaction, get_last_processed_candle, update_processed_candle
 from ..indicators import rsi, ema, atr, atr_percent, macd, bollinger_bands, vwap, volume_zscore, adx
 from ..regime import RegimeClassifier
 from ..scoring import ScoringEngine
@@ -324,10 +324,10 @@ class ScannerJob:
     
     async def _process_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Process a single symbol - fetch data, calculate indicators, generate signals.
-        
+
         Args:
             symbol: Trading symbol to process
-            
+
         Returns:
             Dictionary with processing results or None
         """
@@ -335,31 +335,51 @@ class ScannerJob:
             # Skip if symbol not in universe
             if symbol not in self.universe:
                 return None
-            
-            # Fetch OHLCV data from MEXC API
-            ohlcv_data = await self._fetch_ohlcv_data(symbol)
+
+            # Fetch OHLCV data from MEXC API for 1h timeframe
+            ohlcv_data = await self._fetch_ohlcv_data(symbol, '1h', limit=100)
             if not ohlcv_data:
                 return None
-            
+
+            # Get last closed candle timestamp for 1h timeframe
+            last_closed_1h_ts = self._get_last_closed_candle_ts(ohlcv_data, '1h')
+            if last_closed_1h_ts is None:
+                return None
+
+            # Check if this candle has already been processed
+            last_processed_ts = get_last_processed_candle(self.db_conn, symbol, '1h')
+
+            if last_processed_ts >= last_closed_1h_ts:
+                self.logger.debug(f"{symbol}: 1h candle already processed, skipping")
+                return {
+                    'symbol': symbol,
+                    'signal_created': False,
+                    'reason': 'CANDLE_ALREADY_PROCESSED',
+                    'skipped': True
+                }
+
+            # Only proceed if this is a NEW closed candle
+            self.logger.info(f"{symbol}: processing NEW 1h closed candle at {last_closed_1h_ts}")
+
             # Add to cache
             self.cache.add_data(symbol, ohlcv_data)
-            
+
             # Get processed data
             processed_data = self.cache.get_ohlcv_arrays(symbol)
             if not processed_data or len(processed_data['closes']) < 50:
                 return None  # Need sufficient data
-            
+
             # Calculate technical indicators
             indicators = await self._calculate_indicators(processed_data)
             if not indicators:
                 return None
-            
+
             # Classify regime
             regime = self.regime_classifier.classify_regime(symbol, processed_data, indicators)
-            
+
             # Score the signal
             score_result = self.scoring_engine.score_signal(symbol, processed_data, indicators, regime)
-            
+
             # Create signal if score meets threshold
             if score_result.get('meets_threshold', False) and score_result.get('score', 0) >= 7.0:
                 # Double check pause state before generating signal
@@ -369,25 +389,29 @@ class ScannerJob:
 
                 # Prepare signal data
                 signal_data = self._prepare_signal_data(symbol, processed_data, indicators, regime, score_result)
-                
+
                 # Use portfolio manager if available
                 if self.portfolio_manager:
                     decision = await self.portfolio_manager.add_signal(signal_data)
-                    
+
                     if decision.get('status') == 'APPROVED':
                         # Signal is approved and already inserted by portfolio manager
                         self.logger.info(f"Signal approved by portfolio for {symbol}")
-                        
+
                         # Open paper position
                         if 'signal_id' in decision:
                             signal_data['id'] = decision['signal_id']
                         self.paper_trader.open_position(signal_data)
-                        
+
+                        # Mark this candle as processed
+                        update_processed_candle(self.db_conn, symbol, '1h', last_closed_1h_ts)
+
                         return {
                             'symbol': symbol,
                             'signal_created': True,
                             'score': score_result['score'],
-                            'decision': decision
+                            'decision': decision,
+                            'candle_ts': last_closed_1h_ts
                         }
                     else:
                         self.logger.info(f"Signal rejected by portfolio for {symbol}: {decision.get('reason')}")
@@ -397,53 +421,59 @@ class ScannerJob:
                             'score': score_result['score'],
                             'reason': decision.get('reason')
                         }
-                
+
                 # Fallback to direct insertion if no portfolio manager
                 signal_id = await self._create_signal_record(symbol, processed_data, indicators, regime, score_result)
-                
+
+                # Mark this candle as processed
+                update_processed_candle(self.db_conn, symbol, '1h', last_closed_1h_ts)
+
                 return {
                     'symbol': symbol,
                     'signal_created': True,
                     'signal_id': signal_id,
                     'score': score_result['score'],
                     'confidence': score_result['confidence'],
-                    'reasons': score_result['reasons']
+                    'reasons': score_result['reasons'],
+                    'candle_ts': last_closed_1h_ts
                 }
-            
+
             return {
                 'symbol': symbol,
                 'signal_created': False,
                 'score': score_result['score']
             }
-            
+
         except Exception as e:
             self.logger.error(f"Error processing symbol {symbol}: {e}")
             return {'symbol': symbol, 'error': str(e)}
     
-    async def _fetch_ohlcv_data(self, symbol: str) -> Optional[List[List[float]]]:
+    async def _fetch_ohlcv_data(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> Optional[List[List[float]]]:
         """Fetch OHLCV data from MEXC API.
-        
+
         Args:
             symbol: Trading symbol
-            
+            timeframe: Timeframe to fetch (e.g., '1h', '5m', '4h')
+            limit: Number of candles to fetch
+
         Returns:
             OHLCV data in ccxt format or None
         """
         try:
             self.stats['api_calls_made'] += 1
-            
-            # Fetch 100 candles at 1h timeframe
+
+            # Fetch candles at specified timeframe
             ohlcv = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: self.exchange.fetch_ohlcv(symbol, '1h', limit=100)
+                lambda: self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             )
-            
+
             if not ohlcv or len(ohlcv) < 20:
-                self.logger.warning(f"Insufficient OHLCV data for {symbol}: {len(ohlcv) if ohlcv else 0} candles")
+                self.logger.warning(f"Insufficient OHLCV data for {symbol} {timeframe}: {len(ohlcv) if ohlcv else 0} candles")
                 return None
-            
+
             return ohlcv
-            
+
         except ccxt.NetworkError as e:
             self.logger.warning(f"Network error fetching {symbol}: {e}")
             await asyncio.sleep(1)  # Brief retry delay
@@ -455,6 +485,34 @@ class ScannerJob:
         except Exception as e:
             self.logger.error(f"Error fetching OHLCV for {symbol}: {e}")
             return None
+
+    def _get_last_closed_candle_ts(self, ohlcv: List[List[float]], timeframe: str) -> Optional[int]:
+        """Extract the last closed candle timestamp from OHLCV.
+
+        CCXT returns: [..., [open_time, open, high, low, close, volume]]
+        The last candle in the array is the most recent.
+
+        For 1h/5m/4h timeframes, the candle is considered "closed"
+        when the next candle begins (i.e., all data for that candle is final).
+
+        Since we're fetching after the fact, the last N-1 candle is definitely closed.
+        The Nth (current) candle is still forming.
+
+        Return the timestamp of the last CLOSED candle.
+
+        Args:
+            ohlcv: OHLCV data from CCXT
+            timeframe: Timeframe string (for logging)
+
+        Returns:
+            Timestamp (ms) of the last closed candle or None if insufficient data
+        """
+        if len(ohlcv) < 2:
+            self.logger.debug(f"Insufficient OHLCV data for {timeframe}: need at least 2 candles")
+            return None
+
+        # Return the second-to-last candle's timestamp (definitely closed)
+        return int(ohlcv[-2][0])
     
     async def _calculate_indicators(self, ohlcv_data: Dict[str, List[float]]) -> Optional[Dict[str, Any]]:
         """Calculate all technical indicators.
