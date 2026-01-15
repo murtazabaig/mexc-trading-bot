@@ -316,6 +316,36 @@ async def async_main(args: argparse.Namespace, config: Config) -> int:
             logger.error(f"Error initializing market scanner: {e}")
             scanner = None
 
+        # Initialize and start warning detector
+        logger.info("Initializing warning detector...")
+        try:
+            from .warnings.detector import WarningDetector
+            
+            # Create warning detector
+            warning_detector = WarningDetector(
+                exchange=exchange,
+                db_conn=conn,
+                config=config.__dict__,
+                universe=filtered_markets
+            )
+            warning_detector.set_scheduler(scheduler)
+            
+            # Set Telegram bot for warnings
+            if telegram_bot_instance:
+                warning_detector.set_telegram_bot(telegram_bot_instance)
+            
+            # Start warning detection
+            await warning_detector.start_detection()
+            logger.success("🚨 Warning detector started successfully")
+            logger.info("Warning detector running every 5 minutes for anomaly detection")
+            
+        except ImportError as e:
+            logger.error(f"Could not import warning detector module: {e}")
+            warning_detector = None
+        except Exception as e:
+            logger.error(f"Error initializing warning detector: {e}")
+            warning_detector = None
+
         logger.info("MEXC Futures Signal Bot is running!")
         logger.info("Press Ctrl+C to stop")
         
@@ -323,7 +353,7 @@ async def async_main(args: argparse.Namespace, config: Config) -> int:
         # For now, we'll just wait if not in a test-like run
         # await asyncio.Event().wait()
         
-        return 0, telegram_bot_instance if 'telegram_bot_instance' in locals() else None, scanner if 'scanner' in locals() else None
+        return 0, telegram_bot_instance if 'telegram_bot_instance' in locals() else None, scanner if 'scanner' in locals() else None, warning_detector if 'warning_detector' in locals() else None
         
     except Exception as e:
         logger.exception(f"Fatal error in async_main: {e}")
@@ -363,7 +393,7 @@ def main() -> int:
     
     # Run async main
     try:
-        exit_code, telegram_bot_instance, scanner_instance = asyncio.run(async_main(args, config))
+        exit_code, telegram_bot_instance, scanner_instance, warning_detector_instance = asyncio.run(async_main(args, config))
         return exit_code
     except KeyboardInterrupt:
         logger.info("Main process interrupted by user")
