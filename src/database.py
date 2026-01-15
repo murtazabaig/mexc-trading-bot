@@ -97,15 +97,23 @@ def create_schema(conn: sqlite3.Connection):
         CREATE TABLE IF NOT EXISTS paper_positions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             signal_id INTEGER NOT NULL,
+            symbol TEXT NOT NULL,
             status TEXT,  -- OPEN/CLOSED
+            side TEXT,    -- LONG/SHORT
             size REAL,
             entry_price REAL,
             entry_time DATETIME,
             exit_price REAL,
             exit_time DATETIME,
+            stop_loss REAL,
+            take_profit REAL,
             pnl REAL,
             pnl_percent REAL,
+            pnl_r REAL,
+            duration_hours REAL,
+            max_drawdown REAL,
             exit_reason TEXT,
+            metadata JSON,
             FOREIGN KEY(signal_id) REFERENCES signals(id)
         );
         """)

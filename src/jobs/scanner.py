@@ -15,6 +15,7 @@ from ..indicators import rsi, ema, atr, atr_percent, macd, bollinger_bands, vwap
 from ..regime import RegimeClassifier
 from ..scoring import ScoringEngine
 from ..logger import get_logger
+from ..trading.paper_trader import PaperTrader
 
 logger = get_logger(__name__)
 
@@ -170,6 +171,7 @@ class ScannerJob:
         self.cache = OHLCVCache(max_size=100)
         self.regime_classifier = RegimeClassifier()
         self.scoring_engine = ScoringEngine()
+        self.paper_trader = PaperTrader(config, db_conn)
         
         # Set logger
         self.logger = logger
@@ -243,6 +245,16 @@ class ScannerJob:
         self.stats['last_scan_time'] = datetime.utcnow()
         
         self.logger.info("Starting market scan...")
+        
+        # Update paper trader prices with last known prices from cache
+        current_prices = {}
+        for symbol in self.universe.keys():
+            price = self.cache.get_latest_price(symbol)
+            if price:
+                current_prices[symbol] = price
+        
+        if current_prices:
+            self.paper_trader.update_prices(current_prices)
         
         # Reset counters for this scan
         symbols_scanned = 0
@@ -351,6 +363,11 @@ class ScannerJob:
                     decision = await self.portfolio_manager.add_signal(signal_data)
                     
                     if decision.get('status') == 'APPROVED':
+                        # Open paper position
+                        if 'signal_id' in decision:
+                            signal_data['id'] = decision['signal_id']
+                        self.paper_trader.open_position(signal_data)
+                        
                         return {
                             'symbol': symbol,
                             'signal_created': True,
