@@ -87,7 +87,7 @@ class ReportGenerator:
         sorted_positions = sorted(closed_positions, key=lambda x: x.get('exit_time', ''))
         
         for p in sorted_positions:
-            pnl_r = p.get('pnl', 0.0)
+            pnl_r = p.get('pnl_r', p.get('pnl', 0.0))
             paper_profit_loss_r += pnl_r
             if pnl_r > 0:
                 wins += 1

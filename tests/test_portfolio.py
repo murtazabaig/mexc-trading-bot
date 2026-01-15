@@ -75,8 +75,8 @@ async def test_daily_loss_limit(db_conn, mock_config):
     # Manually insert a closed position with 2.5R loss
     db_conn.execute("INSERT INTO signals (id, symbol, side, entry_price, stop_loss) VALUES (?, ?, ?, ?, ?)", 
                    (1, "BTC/USDT:USDT", "LONG", 100.0, 90.0))
-    db_conn.execute("INSERT INTO paper_positions (signal_id, status, entry_price, exit_price, exit_time) VALUES (?, ?, ?, ?, ?)",
-                   (1, "CLOSED", 100.0, 75.0, datetime.now(timezone.utc).isoformat()))
+    db_conn.execute("INSERT INTO paper_positions (signal_id, symbol, status, entry_price, exit_price, pnl_r, exit_time) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                   (1, "BTC/USDT:USDT", "CLOSED", 100.0, 75.0, -2.5, datetime.now(timezone.utc).isoformat()))
     
     manager.update_state()
     assert manager.daily_pnl_r == -2.5
@@ -93,7 +93,7 @@ async def test_correlation_gating(db_conn, mock_config, mock_exchange):
     
     # Add an active position
     db_conn.execute("INSERT INTO signals (id, symbol) VALUES (1, 'BTC/USDT:USDT')")
-    db_conn.execute("INSERT INTO paper_positions (signal_id, status) VALUES (1, 'OPEN')")
+    db_conn.execute("INSERT INTO paper_positions (signal_id, symbol, status) VALUES (1, 'BTC/USDT:USDT', 'OPEN')")
     manager.update_state()
     
     # Mock OHLCV data

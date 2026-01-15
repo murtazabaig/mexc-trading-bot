@@ -84,9 +84,8 @@ class PortfolioManager:
             # Daily P&L in R units
             cursor = self.db_conn.execute(
                 """
-                SELECT p.*, s.side, s.entry_price as signal_entry, s.stop_loss 
+                SELECT p.pnl_r
                 FROM paper_positions p
-                JOIN signals s ON p.signal_id = s.id
                 WHERE p.status = 'CLOSED' AND date(p.exit_time) = ?
                 """,
                 (today,)
@@ -94,7 +93,7 @@ class PortfolioManager:
             closed_rows = cursor.fetchall()
             self.daily_pnl_r = 0.0
             for row in closed_rows:
-                self.daily_pnl_r += self._calculate_r_pnl(dict(row))
+                self.daily_pnl_r += row['pnl_r'] if row['pnl_r'] is not None else 0.0
                 
             self.last_reset_date = datetime.now(timezone.utc).date()
             logger.info(
@@ -103,29 +102,6 @@ class PortfolioManager:
             )
         except Exception as e:
             logger.error(f"Error loading PortfolioManager state: {e}")
-
-    def _calculate_r_pnl(self, row: Dict) -> float:
-        """Calculate realized P&L in R units for a closed position."""
-        try:
-            side = row.get('side', 'LONG')
-            entry = row.get('entry_price') or row.get('signal_entry')
-            exit = row.get('exit_price')
-            stop_loss = row.get('stop_loss')
-            
-            if entry is None or exit is None or stop_loss is None:
-                return 0.0
-                
-            if side == 'LONG':
-                risk = entry - stop_loss
-                if risk <= 0: return 0.0
-                return (exit - entry) / risk
-            else: # SHORT
-                risk = stop_loss - entry
-                if risk <= 0: return 0.0
-                return (entry - exit) / risk
-        except Exception as e:
-            logger.error(f"Error calculating R P&L: {e}")
-            return 0.0
 
     def _check_day_boundary(self):
         """Reset daily counters if UTC midnight has passed."""
@@ -179,7 +155,8 @@ class PortfolioManager:
             "constraint_violations": [violation_type],
             "confidence_score": signal.get("confidence", 0)
         }
-        self._record_signal_history(signal, decision, metadata)
+        signal_id = self._record_signal_history(signal, decision, metadata)
+        decision['signal_id'] = signal_id
         return decision
 
     def _approve(self, signal: Dict[str, Any], metadata: Dict = None) -> Dict[str, Any]:
@@ -192,7 +169,8 @@ class PortfolioManager:
             "constraint_violations": [],
             "confidence_score": signal.get("confidence", 0)
         }
-        self._record_signal_history(signal, decision, metadata)
+        signal_id = self._record_signal_history(signal, decision, metadata)
+        decision['signal_id'] = signal_id
         return decision
 
     def _record_signal_history(self, signal: Dict[str, Any], decision: Dict[str, Any], metadata: Dict = None):
@@ -340,78 +318,3 @@ class PortfolioManager:
     def update_state(self):
         """Manually trigger a state reload from database."""
         self._load_state()
-
-    def open_position(self, signal_id: int, entry_price: float, size: float):
-        """
-        Record a new open position.
-        
-        Args:
-            signal_id: ID of the signal that triggered this position
-            entry_price: Actual entry price
-            size: Position size
-        """
-        try:
-            with transaction(self.db_conn):
-                self.db_conn.execute(
-                    """
-                    INSERT INTO paper_positions (signal_id, status, entry_price, entry_time, size)
-                    VALUES (?, 'OPEN', ?, ?, ?)
-                    """,
-                    (signal_id, entry_price, datetime.now(timezone.utc), size)
-                )
-            self._load_state()
-            logger.info(f"Position opened for signal {signal_id} at {entry_price}")
-        except Exception as e:
-            logger.error(f"Error opening position: {e}")
-
-    def close_position(self, signal_id: int, exit_price: float, exit_reason: str = None):
-        """
-        Record a closed position and update realized P&L.
-        
-        Args:
-            signal_id: ID of the signal
-            exit_price: Actual exit price
-            exit_reason: Reason for exit (TP, SL, Time-stop, etc.)
-        """
-        try:
-            # Get entry details and side
-            cursor = self.db_conn.execute(
-                """
-                SELECT p.entry_price, p.size, s.side 
-                FROM paper_positions p
-                JOIN signals s ON p.signal_id = s.id
-                WHERE p.signal_id = ? AND p.status = 'OPEN'
-                """,
-                (signal_id,)
-            )
-            row = cursor.fetchone()
-            if not row:
-                logger.warning(f"No open position found for signal {signal_id}")
-                return
-                
-            entry_price = row['entry_price']
-            size = row['size']
-            side = row['side']
-            
-            # Calculate P&L
-            if side == 'LONG':
-                pnl = (exit_price - entry_price) * size
-                pnl_percent = (exit_price - entry_price) / entry_price * 100
-            else: # SHORT
-                pnl = (entry_price - exit_price) * size
-                pnl_percent = (entry_price - exit_price) / entry_price * 100
-                
-            with transaction(self.db_conn):
-                self.db_conn.execute(
-                    """
-                    UPDATE paper_positions 
-                    SET status = 'CLOSED', exit_price = ?, exit_time = ?, pnl = ?, pnl_percent = ?, exit_reason = ?
-                    WHERE signal_id = ? AND status = 'OPEN'
-                    """,
-                    (exit_price, datetime.now(timezone.utc), pnl, pnl_percent, exit_reason, signal_id)
-                )
-            
-            self._load_state()
-            logger.info(f"Position closed for signal {signal_id} at {exit_price}. P&L: {pnl:.2f} ({pnl_percent:.2f}%)")
-        except Exception as e:
-            logger.error(f"Error closing position: {e}")
