@@ -40,6 +40,14 @@ class TradingConfig(BaseModel):
     max_drawdown_pct: float = Field(default=10.0, gt=0)
 
 
+class PortfolioConfig(BaseModel):
+    """Portfolio management and risk control configuration."""
+    max_alerts_per_day: int = Field(default=5, ge=1)
+    max_correlation: float = Field(default=0.7, ge=0, le=1.0)
+    cooldown_minutes: int = Field(default=240, ge=0)
+    daily_loss_limit_r: float = Field(default=2.0, ge=0)
+
+
 class UniverseConfig(BaseModel):
     """Market universe filtering configuration."""
     # Volume filter
@@ -110,6 +118,9 @@ class Config:
     
     # Trading Configuration
     trading: TradingConfig = Field(default_factory=TradingConfig)
+    
+    # Portfolio Configuration
+    portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     
     # Universe Configuration
     universe: UniverseConfig = Field(default_factory=UniverseConfig)
@@ -190,6 +201,18 @@ class Config:
         
         config_data["trading"] = TradingConfig(**trading_config_data)
         
+        # Portfolio Configuration
+        portfolio_config_data = {}
+        for key in ["max_alerts_per_day", "max_correlation", "cooldown_minutes", "daily_loss_limit_r"]:
+            env_key = f"PORTFOLIO_{key.upper()}"
+            if value := os.getenv(env_key):
+                if key == "max_alerts_per_day" or key == "cooldown_minutes":
+                    portfolio_config_data[key] = int(value)
+                else:
+                    portfolio_config_data[key] = float(value)
+        
+        config_data["portfolio"] = PortfolioConfig(**portfolio_config_data)
+        
         # Universe Configuration
         universe_config_data = {}
         for key in ["min_volume_usd", "max_spread_percent", "min_notional", "min_price", "max_price", "refresh_interval_hours"]:
@@ -259,6 +282,9 @@ class Config:
         
         if isinstance(self.trading, dict):
             object.__setattr__(self, "trading", TradingConfig(**self.trading))
+        
+        if isinstance(self.portfolio, dict):
+            object.__setattr__(self, "portfolio", PortfolioConfig(**self.portfolio))
         
         if isinstance(self.universe, dict):
             object.__setattr__(self, "universe", UniverseConfig(**self.universe))

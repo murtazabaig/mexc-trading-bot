@@ -150,7 +150,7 @@ class ScannerJob:
     """Continuous scanner job for generating trading signals."""
     
     def __init__(self, exchange: ccxt.mexc, db_conn, config: Dict[str, Any], 
-                 universe: Dict[str, Any]):
+                 universe: Dict[str, Any], portfolio_manager: Any = None):
         """Initialize scanner job.
         
         Args:
@@ -158,11 +158,13 @@ class ScannerJob:
             db_conn: Database connection
             config: Scanner configuration
             universe: Market universe dictionary
+            portfolio_manager: Portfolio manager instance
         """
         self.exchange = exchange
         self.db_conn = db_conn
         self.config = config
         self.universe = universe
+        self.portfolio_manager = portfolio_manager
         
         # Initialize components
         self.cache = OHLCVCache(max_size=100)
@@ -341,6 +343,29 @@ class ScannerJob:
             
             # Create signal if score meets threshold
             if score_result.get('meets_threshold', False) and score_result.get('score', 0) >= 7.0:
+                # Prepare signal data
+                signal_data = self._prepare_signal_data(symbol, processed_data, indicators, regime, score_result)
+                
+                # Use portfolio manager if available
+                if self.portfolio_manager:
+                    decision = await self.portfolio_manager.add_signal(signal_data)
+                    
+                    if decision.get('status') == 'APPROVED':
+                        return {
+                            'symbol': symbol,
+                            'signal_created': True,
+                            'score': score_result['score'],
+                            'decision': decision
+                        }
+                    else:
+                        return {
+                            'symbol': symbol,
+                            'signal_created': False,
+                            'score': score_result['score'],
+                            'reason': decision.get('reason')
+                        }
+                
+                # Fallback to direct insertion if no portfolio manager
                 signal_id = await self._create_signal_record(symbol, processed_data, indicators, regime, score_result)
                 
                 return {
@@ -494,29 +519,7 @@ class ScannerJob:
             Signal ID if created successfully
         """
         try:
-            signal_data = {
-                'symbol': symbol,
-                'timeframe': '1h',
-                'side': score_result.get('signal_direction', 'NEUTRAL'),
-                'confidence': score_result.get('confidence', 0.0),
-                'regime': regime.get('regime', 'UNKNOWN'),
-                'entry_price': score_result.get('entry_price', 0.0),
-                'stop_loss': score_result.get('stop_loss', 0.0),
-                'tp1': score_result.get('take_profit', 0.0),
-                'tp2': 0.0,
-                'tp3': 0.0,
-                'reason': {
-                    'score_components': score_result.get('components', {}),
-                    'reasons': score_result.get('reasons', []),
-                    'regime_confidence': regime.get('confidence', 0.0),
-                    'indicators': indicators
-                },
-                'metadata': {
-                    'scan_timestamp': datetime.utcnow().isoformat(),
-                    'regime_data': regime,
-                    'score_data': score_result
-                }
-            }
+            signal_data = self._prepare_signal_data(symbol, ohlcv_data, indicators, regime, score_result)
             
             # Insert into database
             signal_id = await asyncio.get_event_loop().run_in_executor(
@@ -533,6 +536,45 @@ class ScannerJob:
         except Exception as e:
             self.logger.error(f"Error creating signal record for {symbol}: {e}")
             return None
+    
+    def _prepare_signal_data(self, symbol: str, ohlcv_data: Dict[str, List[float]], 
+                             indicators: Dict[str, Any], regime: Dict[str, Any], 
+                             score_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepare signal data dictionary.
+        
+        Args:
+            symbol: Trading symbol
+            ohlcv_data: OHLCV data
+            indicators: Calculated indicators
+            regime: Regime classification
+            score_result: Scoring results
+            
+        Returns:
+            Signal data dictionary
+        """
+        return {
+            'symbol': symbol,
+            'timeframe': '1h',
+            'side': score_result.get('signal_direction', 'NEUTRAL'),
+            'confidence': score_result.get('confidence', 0.0),
+            'regime': regime.get('regime', 'UNKNOWN'),
+            'entry_price': score_result.get('entry_price', 0.0),
+            'stop_loss': score_result.get('stop_loss', 0.0),
+            'tp1': score_result.get('take_profit', 0.0),
+            'tp2': 0.0,
+            'tp3': 0.0,
+            'reason': {
+                'score_components': score_result.get('components', {}),
+                'reasons': score_result.get('reasons', []),
+                'regime_confidence': regime.get('confidence', 0.0),
+                'indicators': indicators
+            },
+            'metadata': {
+                'scan_timestamp': datetime.utcnow().isoformat(),
+                'regime_data': regime,
+                'score_data': score_result
+            }
+        }
     
     def get_stats(self) -> Dict[str, Any]:
         """Get scanner statistics.
@@ -561,7 +603,7 @@ class ScannerJob:
 
 
 def create_scanner_job(exchange: ccxt.mexc, db_conn, config: Dict[str, Any], 
-                      universe: Dict[str, Any]) -> ScannerJob:
+                      universe: Dict[str, Any], portfolio_manager: Any = None) -> ScannerJob:
     """Create and configure a scanner job instance.
     
     Args:
@@ -569,6 +611,7 @@ def create_scanner_job(exchange: ccxt.mexc, db_conn, config: Dict[str, Any],
         db_conn: Database connection
         config: Scanner configuration
         universe: Market universe dictionary
+        portfolio_manager: Portfolio manager instance
         
     Returns:
         Configured ScannerJob instance
@@ -579,7 +622,8 @@ def create_scanner_job(exchange: ccxt.mexc, db_conn, config: Dict[str, Any],
         exchange=exchange,
         db_conn=db_conn,
         config=scanner_config,
-        universe=universe
+        universe=universe,
+        portfolio_manager=portfolio_manager
     )
     
     logger.info(f"Scanner job created for {len(universe)} symbols")
