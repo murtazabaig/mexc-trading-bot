@@ -323,7 +323,7 @@ class ScannerJob:
         )
     
     async def _process_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Process a single symbol - fetch data, calculate indicators, generate signals.
+        """Process a single symbol - fetch MTF data, calculate indicators, generate signals.
 
         Args:
             symbol: Trading symbol to process
@@ -336,21 +336,25 @@ class ScannerJob:
             if symbol not in self.universe:
                 return None
 
-            # Fetch OHLCV data from MEXC API for 1h timeframe
-            ohlcv_data = await self._fetch_ohlcv_data(symbol, '1h', limit=100)
-            if not ohlcv_data:
+            # Fetch OHLCV data from MEXC API for all three timeframes
+            ohlcv_5m = await self._fetch_ohlcv_data(symbol, '5m', limit=100)
+            ohlcv_1h = await self._fetch_ohlcv_data(symbol, '1h', limit=100)
+            ohlcv_4h = await self._fetch_ohlcv_data(symbol, '4h', limit=100)
+
+            if not (ohlcv_5m and ohlcv_1h and ohlcv_4h):
+                self.logger.warning(f"{symbol}: insufficient data for MTF scan, skipping")
                 return None
 
-            # Get last closed candle timestamp for 1h timeframe
-            last_closed_1h_ts = self._get_last_closed_candle_ts(ohlcv_data, '1h')
-            if last_closed_1h_ts is None:
+            # Get last closed candle timestamp for 5m timeframe (entry trigger)
+            last_closed_5m_ts = self._get_last_closed_candle_ts(ohlcv_5m, '5m')
+            if last_closed_5m_ts is None:
                 return None
 
-            # Check if this candle has already been processed
-            last_processed_ts = get_last_processed_candle(self.db_conn, symbol, '1h')
+            # Check if this 5m candle has already been processed
+            last_processed_ts = get_last_processed_candle(self.db_conn, symbol, '5m')
 
-            if last_processed_ts >= last_closed_1h_ts:
-                self.logger.debug(f"{symbol}: 1h candle already processed, skipping")
+            if last_processed_ts >= last_closed_5m_ts:
+                self.logger.debug(f"{symbol}: 5m candle already processed, skipping")
                 return {
                     'symbol': symbol,
                     'signal_created': False,
@@ -358,90 +362,105 @@ class ScannerJob:
                     'skipped': True
                 }
 
-            # Only proceed if this is a NEW closed candle
-            self.logger.info(f"{symbol}: processing NEW 1h closed candle at {last_closed_1h_ts}")
+            # Only proceed if this is a NEW closed 5m candle
+            self.logger.info(f"{symbol}: processing NEW 5m closed candle at {last_closed_5m_ts}")
 
-            # Add to cache
-            self.cache.add_data(symbol, ohlcv_data)
+            # Convert OHLCV data to array format for all timeframes
+            data_5m = self._convert_ohlcv_to_arrays(ohlcv_5m)
+            data_1h = self._convert_ohlcv_to_arrays(ohlcv_1h)
+            data_4h = self._convert_ohlcv_to_arrays(ohlcv_4h)
 
-            # Get processed data
-            processed_data = self.cache.get_ohlcv_arrays(symbol)
-            if not processed_data or len(processed_data['closes']) < 50:
-                return None  # Need sufficient data
-
-            # Calculate technical indicators
-            indicators = await self._calculate_indicators(processed_data)
-            if not indicators:
+            if not data_5m or not data_1h or not data_4h:
+                self.logger.warning(f"{symbol}: failed to convert OHLCV data, skipping")
                 return None
 
-            # Classify regime
-            regime = self.regime_classifier.classify_regime(symbol, processed_data, indicators)
+            # Add 5m data to cache (for paper trader)
+            self.cache.add_data(symbol, ohlcv_5m)
 
-            # Score the signal
-            score_result = self.scoring_engine.score_signal(symbol, processed_data, indicators, regime)
+            # Check minimum data requirements
+            if len(data_5m['closes']) < 50 or len(data_1h['closes']) < 50 or len(data_4h['closes']) < 50:
+                self.logger.debug(f"{symbol}: insufficient data points, skipping")
+                return None
 
-            # Create signal if score meets threshold
-            if score_result.get('meets_threshold', False) and score_result.get('score', 0) >= 7.0:
-                # Double check pause state before generating signal
-                if self.pause_state and self.pause_state.is_paused():
-                    self.logger.info(f"Signal generation paused: {self.pause_state.reason()}")
-                    return {'symbol': symbol, 'signal_created': False, 'reason': 'PAUSED'}
+            # Compute indicators for all three timeframes
+            ind_5m = await self._calculate_indicators(data_5m)
+            ind_1h = await self._calculate_indicators(data_1h)
+            ind_4h = await self._calculate_indicators(data_4h)
 
-                # Prepare signal data
-                signal_data = self._prepare_signal_data(symbol, processed_data, indicators, regime, score_result)
+            if not (ind_5m and ind_1h and ind_4h):
+                self.logger.warning(f"{symbol}: failed to calculate indicators, skipping")
+                return None
 
-                # Use portfolio manager if available
-                if self.portfolio_manager:
-                    decision = await self.portfolio_manager.add_signal(signal_data)
+            # Classify regime (using 5m data for entry context)
+            regime = self.regime_classifier.classify_regime(symbol, data_5m, ind_5m)
 
-                    if decision.get('status') == 'APPROVED':
-                        # Signal is approved and already inserted by portfolio manager
-                        self.logger.info(f"Signal approved by portfolio for {symbol}")
+            # Log MTF data clearly
+            self._log_mtf_data(symbol, data_5m, data_1h, data_4h, ind_5m, ind_1h, ind_4h)
 
-                        # Open paper position
-                        if 'signal_id' in decision:
-                            signal_data['id'] = decision['signal_id']
-                        self.paper_trader.open_position(signal_data)
+            # Score the signal using MTF confluence
+            signal = self._score_signal_mtf(symbol, data_5m, data_1h, data_4h, ind_5m, ind_1h, ind_4h, regime)
 
-                        # Mark this candle as processed
-                        update_processed_candle(self.db_conn, symbol, '1h', last_closed_1h_ts)
-
-                        return {
-                            'symbol': symbol,
-                            'signal_created': True,
-                            'score': score_result['score'],
-                            'decision': decision,
-                            'candle_ts': last_closed_1h_ts
-                        }
-                    else:
-                        self.logger.info(f"Signal rejected by portfolio for {symbol}: {decision.get('reason')}")
-                        return {
-                            'symbol': symbol,
-                            'signal_created': False,
-                            'score': score_result['score'],
-                            'reason': decision.get('reason')
-                        }
-
-                # Fallback to direct insertion if no portfolio manager
-                signal_id = await self._create_signal_record(symbol, processed_data, indicators, regime, score_result)
-
-                # Mark this candle as processed
-                update_processed_candle(self.db_conn, symbol, '1h', last_closed_1h_ts)
-
+            if not signal:
                 return {
                     'symbol': symbol,
-                    'signal_created': True,
-                    'signal_id': signal_id,
-                    'score': score_result['score'],
-                    'confidence': score_result['confidence'],
-                    'reasons': score_result['reasons'],
-                    'candle_ts': last_closed_1h_ts
+                    'signal_created': False,
+                    'reason': 'NO_SIGNAL'
                 }
+
+            # Double check pause state before generating signal
+            if self.pause_state and self.pause_state.is_paused():
+                self.logger.info(f"Signal generation paused: {self.pause_state.reason()}")
+                return {'symbol': symbol, 'signal_created': False, 'reason': 'PAUSED'}
+
+            # Prepare signal data with MTF context
+            signal_data = self._prepare_signal_data_mtf(symbol, data_5m, ind_5m, ind_1h, ind_4h, regime, signal)
+
+            # Use portfolio manager if available
+            if self.portfolio_manager:
+                decision = await self.portfolio_manager.add_signal(signal_data)
+
+                if decision.get('status') == 'APPROVED':
+                    # Signal is approved and already inserted by portfolio manager
+                    self.logger.info(f"Signal approved by portfolio for {symbol}")
+
+                    # Open paper position
+                    if 'signal_id' in decision:
+                        signal_data['id'] = decision['signal_id']
+                    self.paper_trader.open_position(signal_data)
+
+                    # Mark this 5m candle as processed
+                    update_processed_candle(self.db_conn, symbol, '5m', last_closed_5m_ts)
+
+                    return {
+                        'symbol': symbol,
+                        'signal_created': True,
+                        'score': signal['score'],
+                        'decision': decision,
+                        'candle_ts': last_closed_5m_ts
+                    }
+                else:
+                    self.logger.info(f"Signal rejected by portfolio for {symbol}: {decision.get('reason')}")
+                    return {
+                        'symbol': symbol,
+                        'signal_created': False,
+                        'score': signal['score'],
+                        'reason': decision.get('reason')
+                    }
+
+            # Fallback to direct insertion if no portfolio manager
+            signal_id = await self._create_signal_record_mtf(symbol, data_5m, ind_5m, ind_1h, ind_4h, regime, signal)
+
+            # Mark this 5m candle as processed
+            update_processed_candle(self.db_conn, symbol, '5m', last_closed_5m_ts)
 
             return {
                 'symbol': symbol,
-                'signal_created': False,
-                'score': score_result['score']
+                'signal_created': True,
+                'signal_id': signal_id,
+                'score': signal['score'],
+                'confidence': signal['confidence'],
+                'reasons': signal['reasons'],
+                'candle_ts': last_closed_5m_ts
             }
 
         except Exception as e:
@@ -513,6 +532,240 @@ class ScannerJob:
 
         # Return the second-to-last candle's timestamp (definitely closed)
         return int(ohlcv[-2][0])
+
+    def _convert_ohlcv_to_arrays(self, ohlcv: List[List[float]]) -> Optional[Dict[str, List[float]]]:
+        """Convert OHLCV data from CCXT format to array format.
+
+        Args:
+            ohlcv: OHLCV data in ccxt format (timestamp, open, high, low, close, volume)
+
+        Returns:
+            Dictionary with arrays or None if insufficient data
+        """
+        if not ohlcv or len(ohlcv) < 2:
+            return None
+
+        try:
+            return {
+                'timestamps': [candle[0] for candle in ohlcv],
+                'opens': [float(candle[1]) for candle in ohlcv],
+                'highs': [float(candle[2]) for candle in ohlcv],
+                'lows': [float(candle[3]) for candle in ohlcv],
+                'closes': [float(candle[4]) for candle in ohlcv],
+                'volumes': [float(candle[5]) for candle in ohlcv]
+            }
+        except Exception as e:
+            self.logger.error(f"Error converting OHLCV data: {e}")
+            return None
+
+    def _log_mtf_data(self, symbol: str, data_5m: Dict, data_1h: Dict, data_4h: Dict,
+                     ind_5m: Dict, ind_1h: Dict, ind_4h: Dict):
+        """Log MTF data clearly for debugging.
+
+        Args:
+            symbol: Trading symbol
+            data_5m: 5m OHLCV arrays
+            data_1h: 1h OHLCV arrays
+            data_4h: 4h OHLCV arrays
+            ind_5m: 5m indicators
+            ind_1h: 1h indicators
+            ind_4h: 4h indicators
+        """
+        try:
+            # Extract 5m data
+            rsi_5m = ind_5m.get('rsi', {}).get('value', 0)
+            ema20_5m = ind_5m.get('ema', {}).get('20', 0)
+            ema50_5m = ind_5m.get('ema', {}).get('50', 0)
+            vol_zscore_5m = ind_5m.get('volume_zscore', {}).get('20', 0)
+
+            # Extract 1h data
+            ema20_1h = ind_1h.get('ema', {}).get('20', 0)
+            ema50_1h = ind_1h.get('ema', {}).get('50', 0)
+            ema200_1h = ind_1h.get('ema', {}).get('200', 0)
+            macd_1h = ind_1h.get('macd', {})
+            macd_hist_1h = macd_1h.get('histogram', [0])[-1] if macd_1h else 0
+
+            # Extract 4h data
+            ema50_4h = ind_4h.get('ema', {}).get('50', 0)
+            ema200_4h = ind_4h.get('ema', {}).get('200', 0)
+            price_5m = data_5m['closes'][-1]
+            price_1h = data_1h['closes'][-1]
+            price_4h = data_4h['closes'][-1]
+
+            # Determine trends
+            trend_5m = "BULLISH" if ema20_5m > ema50_5m else "BEARISH"
+            trend_1h = "UP" if ema20_1h > ema50_1h else "DOWN"
+            trend_4h = "UP" if ema50_4h > ema200_4h else "DOWN"
+
+            # Build log message
+            self.logger.info(f"SCANNING: symbol={symbol}")
+            self.logger.info(f"  5m: RSI={rsi_5m:.1f}, EMA20={ema20_5m:.2f} { '>' if ema20_5m > ema50_5m else '<' } EMA50={ema50_5m:.2f} ({trend_5m}), vol_zscore={vol_zscore_5m:.1f}")
+            self.logger.info(f"  1h: EMA20={ema20_1h:.2f} { '>' if ema20_1h > ema50_1h else '<' } EMA50={ema50_1h:.2f} (trend {trend_1h}), MACD_hist={macd_hist_1h:.4f}")
+            self.logger.info(f"  4h: EMA50={ema50_4h:.2f} { '>' if ema50_4h > ema200_4h else '<' } EMA200={ema200_4h:.2f} ({trend_4h}), price={price_4h:.2f}")
+
+        except Exception as e:
+            self.logger.warning(f"Error logging MTF data: {e}")
+
+    def _check_mtf_confluence(self, ind_5m: Dict, ind_1h: Dict, ind_4h: Dict,
+                             direction: str) -> Dict[str, Any]:
+        """Check if timeframes align for the proposed direction.
+
+        Args:
+            ind_5m: 5m indicators
+            ind_1h: 1h indicators
+            ind_4h: 4h indicators
+            direction: Proposed signal direction (LONG/SHORT)
+
+        Returns:
+            Dictionary with:
+                - aligned: bool
+                - reason: str
+                - score_penalty: float (0 to -3.0)
+
+        Rules for LONG:
+        - 1h trend must be bullish (EMA20 > EMA50, or MACD > signal)
+        - 4h must not be strongly bearish (allow some neutrality but no strong sell)
+        - 5m entry trigger must exist
+
+        Rules for SHORT:
+        - 1h trend must be bearish (EMA20 < EMA50, or MACD < signal)
+        - 4h must not be strongly bullish
+        - 5m entry trigger must exist
+
+        Penalties applied if alignment weak but not blocked:
+        - 1h weaker than expected: -1.0 score
+        - 4h slightly opposed: -1.5 score
+        """
+        if direction == 'LONG':
+            # Check 1h trend
+            ema_20_1h = ind_1h.get('ema', {}).get('20', 0)
+            ema_50_1h = ind_1h.get('ema', {}).get('50', 0)
+            macd_1h = ind_1h.get('macd', {})
+
+            trend_bullish = (ema_20_1h > ema_50_1h) or (macd_1h.get('histogram', [0])[-1] > 0)
+
+            if not trend_bullish:
+                return {
+                    'aligned': False,
+                    'reason': f"1h trend bearish (EMA20={ema_20_1h:.2f} < EMA50={ema_50_1h:.2f})",
+                    'score_penalty': -3.0
+                }
+
+            # Check 4h macro context
+            ema_50_4h = ind_4h.get('ema', {}).get('50', 0)
+            ema_200_4h = ind_4h.get('ema', {}).get('200', 0)
+
+            if ema_50_4h < ema_200_4h:
+                return {
+                    'aligned': True,
+                    'reason': "1h bullish + 4h in downtrend (macro caution)",
+                    'score_penalty': -1.5
+                }
+
+            return {
+                'aligned': True,
+                'reason': "1h bullish + 4h support structure",
+                'score_penalty': 0.0
+            }
+
+        elif direction == 'SHORT':
+            ema_20_1h = ind_1h.get('ema', {}).get('20', 0)
+            ema_50_1h = ind_1h.get('ema', {}).get('50', 0)
+            macd_1h = ind_1h.get('macd', {})
+
+            trend_bearish = (ema_20_1h < ema_50_1h) or (macd_1h.get('histogram', [0])[-1] < 0)
+
+            if not trend_bearish:
+                return {
+                    'aligned': False,
+                    'reason': f"1h trend bullish (EMA20={ema_20_1h:.2f} > EMA50={ema_50_1h:.2f})",
+                    'score_penalty': -3.0
+                }
+
+            ema_50_4h = ind_4h.get('ema', {}).get('50', 0)
+            ema_200_4h = ind_4h.get('ema', {}).get('200', 0)
+
+            if ema_50_4h > ema_200_4h:
+                return {
+                    'aligned': True,
+                    'reason': "1h bearish + 4h in uptrend (macro caution)",
+                    'score_penalty': -1.5
+                }
+
+            return {
+                'aligned': True,
+                'reason': "1h bearish + 4h resistance structure",
+                'score_penalty': 0.0
+            }
+
+        return {
+            'aligned': True,
+            'reason': 'NEUTRAL direction, no MTF check',
+            'score_penalty': 0.0
+        }
+
+    def _score_signal_mtf(self, symbol: str, data_5m: Dict, data_1h: Dict, data_4h: Dict,
+                          ind_5m: Dict, ind_1h: Dict, ind_4h: Dict,
+                          regime: Dict) -> Optional[Dict[str, Any]]:
+        """Score signal with MTF confluence.
+
+        Args:
+            symbol: Trading symbol
+            data_5m: 5m OHLCV arrays
+            data_1h: 1h OHLCV arrays
+            data_4h: 4h OHLCV arrays
+            ind_5m: 5m indicators
+            ind_1h: 1h indicators
+            ind_4h: 4h indicators
+            regime: Regime classification
+
+        Returns:
+            Signal dict or None if no signal
+        """
+        # Score the signal using existing engine on 5m indicators
+        score_result = self.scoring_engine.score_signal(symbol, data_5m, ind_5m, regime)
+
+        if not score_result or score_result.get('score', 0) < 7.0:
+            return None
+
+        # Check MTF confluence
+        direction = score_result['signal_direction']
+        confluence = self._check_mtf_confluence(ind_5m, ind_1h, ind_4h, direction)
+
+        if not confluence['aligned']:
+            self.logger.info(f"{symbol}: MTF confluence check BLOCKED: {confluence['reason']}")
+            return None
+
+        # Apply MTF penalty to score
+        final_score = score_result['score'] + confluence['score_penalty']
+
+        if final_score < 7.0:
+            self.logger.info(f"{symbol}: score after MTF penalty {final_score:.1f} < 7.0, rejected")
+            return None
+
+        # Build final signal
+        signal = {
+            'symbol': symbol,
+            'direction': direction,
+            'score': final_score,
+            'entry_price': score_result['entry_price'],
+            'stop_loss': score_result['stop_loss'],
+            'take_profit': score_result['take_profit'],
+            'reasons': score_result['reasons'] + [f"MTF: {confluence['reason']}"],
+            'confidence': final_score / 10.0,
+            'mtf_check': confluence,
+            'indicators_5m': ind_5m,
+            'indicators_1h': ind_1h,
+            'indicators_4h': ind_4h,
+        }
+
+        self.logger.info(f"{symbol}: HIGH CONFIDENCE SIGNAL (MTF-aligned)")
+        self.logger.info(f"  Direction: {direction}")
+        self.logger.info(f"  Score: {final_score:.1f}/10")
+        self.logger.info(f"  MTF: {confluence['reason']}")
+        self.logger.info(f"  Entry: {signal['entry_price']:.2f}, SL: {signal['stop_loss']:.2f}, TP: {signal['take_profit']:.2f}")
+
+        return signal
     
     async def _calculate_indicators(self, ohlcv_data: Dict[str, List[float]]) -> Optional[Dict[str, Any]]:
         """Calculate all technical indicators.
@@ -541,11 +794,12 @@ class ScannerJob:
             except Exception as e:
                 self.logger.debug(f"RSI calculation failed: {e}")
             
-            # EMA(20, 50)
+            # EMA(20, 50, 200)
             try:
                 ema_20 = ema(closes, 20)
                 ema_50 = ema(closes, 50)
-                indicators['ema'] = {'20': ema_20, '50': ema_50}
+                ema_200 = ema(closes, 200) if len(closes) >= 200 else ema_50
+                indicators['ema'] = {'20': ema_20, '50': ema_50, '200': ema_200}
             except Exception as e:
                 self.logger.debug(f"EMA calculation failed: {e}")
             
@@ -628,18 +882,18 @@ class ScannerJob:
             self.logger.error(f"Error creating signal record for {symbol}: {e}")
             return None
     
-    def _prepare_signal_data(self, symbol: str, ohlcv_data: Dict[str, List[float]], 
-                             indicators: Dict[str, Any], regime: Dict[str, Any], 
-                             score_result: Dict[str, Any]) -> Dict[str, Any]:
+    def _prepare_signal_data(self, symbol: str, ohlcv_data: Dict[str, List[float]],
+                              indicators: Dict[str, Any], regime: Dict[str, Any],
+                              score_result: Dict[str, Any]) -> Dict[str, Any]:
         """Prepare signal data dictionary.
-        
+
         Args:
             symbol: Trading symbol
             ohlcv_data: OHLCV data
             indicators: Calculated indicators
             regime: Regime classification
             score_result: Scoring results
-            
+
         Returns:
             Signal data dictionary
         """
@@ -666,6 +920,86 @@ class ScannerJob:
                 'score_data': score_result
             }
         }
+
+    def _prepare_signal_data_mtf(self, symbol: str, data_5m: Dict, ind_5m: Dict,
+                                   ind_1h: Dict, ind_4h: Dict, regime: Dict,
+                                   signal: Dict) -> Dict[str, Any]:
+        """Prepare signal data with MTF context.
+
+        Args:
+            symbol: Trading symbol
+            data_5m: 5m OHLCV arrays
+            ind_5m: 5m indicators
+            ind_1h: 1h indicators
+            ind_4h: 4h indicators
+            regime: Regime classification
+            signal: MTF signal dict
+
+        Returns:
+            Signal data dictionary
+        """
+        return {
+            'symbol': symbol,
+            'timeframe': '5m',
+            'side': signal['direction'],
+            'confidence': signal['confidence'],
+            'regime': regime.get('regime', 'UNKNOWN'),
+            'entry_price': signal['entry_price'],
+            'stop_loss': signal['stop_loss'],
+            'tp1': signal['take_profit'],
+            'tp2': 0.0,
+            'tp3': 0.0,
+            'reason': {
+                'score': signal['score'],
+                'reasons': signal['reasons'],
+                'regime_confidence': regime.get('confidence', 0.0),
+                'mtf_check': signal['mtf_check'],
+                'indicators_5m': ind_5m,
+                'indicators_1h': ind_1h,
+                'indicators_4h': ind_4h
+            },
+            'metadata': {
+                'scan_timestamp': datetime.utcnow().isoformat(),
+                'regime_data': regime,
+                'mtf_signal': signal
+            }
+        }
+
+    async def _create_signal_record_mtf(self, symbol: str, data_5m: Dict, ind_5m: Dict,
+                                        ind_1h: Dict, ind_4h: Dict, regime: Dict,
+                                        signal: Dict) -> Optional[int]:
+        """Create a signal record in the database with MTF context.
+
+        Args:
+            symbol: Trading symbol
+            data_5m: 5m OHLCV arrays
+            ind_5m: 5m indicators
+            ind_1h: 1h indicators
+            ind_4h: 4h indicators
+            regime: Regime classification
+            signal: MTF signal dict
+
+        Returns:
+            Signal ID if created successfully
+        """
+        try:
+            signal_data = self._prepare_signal_data_mtf(symbol, data_5m, ind_5m, ind_1h, ind_4h, regime, signal)
+
+            # Insert into database
+            signal_id = await asyncio.get_event_loop().run_in_executor(
+                None, insert_signal, self.db_conn, signal_data
+            )
+
+            self.logger.info(
+                f"Signal inserted: {symbol} {signal_data['side']} "
+                f"(confidence: {signal_data['confidence']:.2f}, score: {signal_data['metadata']['mtf_signal']['score']:.1f})"
+            )
+
+            return signal_id
+
+        except Exception as e:
+            self.logger.error(f"Error creating signal record for {symbol}: {e}")
+            return None
     
     def get_stats(self) -> Dict[str, Any]:
         """Get scanner statistics.
