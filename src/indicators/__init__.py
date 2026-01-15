@@ -8,7 +8,9 @@ from .core import (
     atr_percent,
     vwap,
     volume_zscore,
-    adx
+    adx,
+    macd,
+    bollinger_bands
 )
 
 from .helpers import (
@@ -24,6 +26,8 @@ __all__ = [
     'vwap',
     'volume_zscore',
     'adx',
+    'macd',
+    'bollinger_bands',
     'true_range',
     'sma',
     'atr_smoothed_variant'

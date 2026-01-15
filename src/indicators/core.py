@@ -1,7 +1,10 @@
 """Core technical indicators for signal generation and regime classification."""
 
-from typing import List
+from typing import List, Dict
 import math
+
+# Import SMA from helpers for use in other indicators
+from .helpers import sma
 
 
 def ema(closes: List[float], period: int) -> float:
@@ -277,6 +280,106 @@ def _smoothed_dm(dm_values: List[float], period: int, alpha: float = None) -> fl
         smoothed = alpha * max(0, value) + (1 - alpha) * smoothed
     
     return smoothed
+
+
+def macd(closes: List[float], fast_period: int = 12, slow_period: int = 26, signal_period: int = 9) -> Dict[str, float]:
+    """
+    Calculate MACD (Moving Average Convergence Divergence).
+    
+    Args:
+        closes: List of closing prices (oldest first)
+        fast_period: Fast EMA period (default 12)
+        slow_period: Slow EMA period (default 26)
+        signal_period: Signal line EMA period (default 9)
+        
+    Returns:
+        Dictionary with MACD, signal, and histogram values
+        
+    Raises:
+        ValueError: If not enough data points or invalid inputs
+    """
+    if len(closes) < slow_period + signal_period:
+        raise ValueError(f"Not enough data points for MACD. Need {slow_period + signal_period}, got {len(closes)}")
+    
+    if fast_period <= 0 or slow_period <= 0 or signal_period <= 0:
+        raise ValueError("All periods must be positive")
+    
+    if fast_period >= slow_period:
+        raise ValueError("Fast period must be less than slow period")
+    
+    # Calculate EMAs
+    ema_fast = ema(closes, fast_period)
+    ema_slow = ema(closes, slow_period)
+    
+    # Calculate MACD line
+    macd_line = ema_fast - ema_slow
+    
+    # Calculate signal line (EMA of MACD line)
+    # For signal calculation, we need the MACD line history
+    macd_history = []
+    for i in range(slow_period - 1, len(closes)):
+        fast_ema_i = ema(closes[:i+1], fast_period)
+        slow_ema_i = ema(closes[:i+1], slow_period)
+        macd_history.append(fast_ema_i - slow_ema_i)
+    
+    if len(macd_history) < signal_period:
+        # Not enough history for signal line, return basic MACD
+        return {
+            "macd": macd_line,
+            "signal": macd_line,  # Fallback
+            "histogram": 0.0
+        }
+    
+    signal_line = ema(macd_history, signal_period)
+    histogram = macd_line - signal_line
+    
+    return {
+        "macd": macd_line,
+        "signal": signal_line,
+        "histogram": histogram
+    }
+
+
+def bollinger_bands(closes: List[float], period: int = 20, std_dev: float = 2.0) -> Dict[str, float]:
+    """
+    Calculate Bollinger Bands.
+    
+    Args:
+        closes: List of closing prices (oldest first)
+        period: Period for SMA and standard deviation (default 20)
+        std_dev: Number of standard deviations for bands (default 2.0)
+        
+    Returns:
+        Dictionary with upper band, middle band (SMA), and lower band
+        
+    Raises:
+        ValueError: If not enough data points or invalid inputs
+    """
+    if len(closes) < period:
+        raise ValueError(f"Not enough data points for Bollinger Bands. Need {period}, got {len(closes)}")
+    
+    if period <= 0 or std_dev <= 0:
+        raise ValueError("Period and standard deviation must be positive")
+    
+    # Calculate middle band (SMA)
+    middle_band = sma(closes, period)
+    
+    # Calculate standard deviation
+    period_closes = closes[-period:]
+    variance = sum((price - middle_band) ** 2 for price in period_closes) / period
+    std_deviation = math.sqrt(variance)
+    
+    # Calculate upper and lower bands
+    upper_band = middle_band + (std_deviation * std_dev)
+    lower_band = middle_band - (std_deviation * std_dev)
+    
+    return {
+        "upper": upper_band,
+        "middle": middle_band,
+        "lower": lower_band,
+        "bandwidth": upper_band - lower_band,
+        "position": (closes[-1] - lower_band) / (upper_band - lower_band) if upper_band != lower_band else 0.5
+    }
 
 
 def adx(highs: List[float], lows: List[float], period: int = 14) -> float:

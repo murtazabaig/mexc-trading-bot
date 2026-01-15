@@ -295,6 +295,27 @@ async def async_main(args: argparse.Namespace, config: Config) -> int:
             logger.error(f"Error initializing Telegram bot: {e}")
             telegram_bot_instance = None
 
+        # Initialize and start market scanner
+        logger.info("Initializing market scanner...")
+        try:
+            from .jobs.scanner import create_scanner_job
+            
+            # Create scanner job
+            scanner = create_scanner_job(exchange, conn, config.__dict__, filtered_markets)
+            scanner.set_scheduler(scheduler)
+            
+            # Start scanner
+            await scanner.start_scanning()
+            logger.success("🔍 Market scanner started successfully")
+            logger.info("Scanner running every 5 minutes for signal generation")
+            
+        except ImportError as e:
+            logger.error(f"Could not import scanner module: {e}")
+            scanner = None
+        except Exception as e:
+            logger.error(f"Error initializing market scanner: {e}")
+            scanner = None
+
         logger.info("MEXC Futures Signal Bot is running!")
         logger.info("Press Ctrl+C to stop")
         
@@ -302,11 +323,11 @@ async def async_main(args: argparse.Namespace, config: Config) -> int:
         # For now, we'll just wait if not in a test-like run
         # await asyncio.Event().wait()
         
-        return 0, telegram_bot_instance if 'telegram_bot_instance' in locals() else None
+        return 0, telegram_bot_instance if 'telegram_bot_instance' in locals() else None, scanner if 'scanner' in locals() else None
         
     except Exception as e:
         logger.exception(f"Fatal error in async_main: {e}")
-        return 1, None
+        return 1, None, None
 
 
 def main() -> int:
@@ -342,7 +363,7 @@ def main() -> int:
     
     # Run async main
     try:
-        exit_code, telegram_bot_instance = asyncio.run(async_main(args, config))
+        exit_code, telegram_bot_instance, scanner_instance = asyncio.run(async_main(args, config))
         return exit_code
     except KeyboardInterrupt:
         logger.info("Main process interrupted by user")
