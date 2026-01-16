@@ -77,6 +77,23 @@ class MexcSignalBot:
     def set_mode(self, mode: str):
         """Set the bot mode (active, paused, scanning, error)."""
         self.mode = mode
+        logger.info(f"Bot mode set to: {mode}")
+    
+    def set_scanner(self, scanner):
+        """Set scanner reference."""
+        self.scanner = scanner
+    
+    def set_warning_detector(self, warning_detector):
+        """Set warning detector reference."""
+        self.warning_detector = warning_detector
+    
+    def set_portfolio_manager(self, portfolio_manager):
+        """Set portfolio manager reference."""
+        self.portfolio_manager = portfolio_manager
+    
+    def set_database_connection(self, db_conn):
+        """Set database connection."""
+        self.db_conn = db_conn
     
     def _is_admin(self, update: Update) -> bool:
         """Check if the user is the admin.
@@ -183,19 +200,15 @@ Example: /symbol BTCUSDT
         # Calculate uptime
         uptime_seconds = int((datetime.now(timezone.utc) - self.start_time).total_seconds())
         
-        # Get stats from components
-        scanner_stats = self.scanner.get_stats() if self.scanner else None
-        warning_stats = self.warning_detector.get_stats() if self.warning_detector else None
-        portfolio_stats = self.portfolio_manager.get_stats() if self.portfolio_manager else None
+        # Get stats from components - REAL data
+        scanner_stats = self.scanner.get_scan_stats() if self.scanner else {}
+        warning_stats = self.warning_detector.get_stats() if self.warning_detector else {}
+        portfolio_stats = self.portfolio_manager.get_stats() if self.portfolio_manager else {}
         
         # Use last scan time from scanner if available
         last_scan = self.last_scan_time
-        if scanner_stats and scanner_stats.get('last_scan_time'):
-            last_scan_val = scanner_stats.get('last_scan_time')
-            if isinstance(last_scan_val, str):
-                last_scan = datetime.fromisoformat(last_scan_val)
-            else:
-                last_scan = last_scan_val
+        if scanner_stats and scanner_stats.get('last_scan'):
+            last_scan = datetime.fromisoformat(scanner_stats['last_scan'].replace('Z', '+00:00'))
 
         status_text = format_status(
             uptime_seconds=uptime_seconds,

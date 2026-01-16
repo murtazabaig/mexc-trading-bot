@@ -191,6 +191,15 @@ class ScannerJob:
             'start_time': None
         }
         
+        # Real scan statistics for bot queries
+        self.scan_stats = {
+            'symbols_scanned': 0,
+            'signals_created': 0,
+            'errors_count': 0,
+            'scan_duration': 0,
+            'timestamp': None
+        }
+        
         # Control flags
         self.running = False
         self.scheduler = None
@@ -246,17 +255,17 @@ class ScannerJob:
         """Main scanning function - processes all symbols in universe."""
         # Check BEFORE processing, not during loop
         if not self.running:
-            self.logger.info("Scan skipped: scanner disabled")
+            self.logger.info("📴 Scan skipped: scanner disabled")
             return
 
         if self.pause_state and self.pause_state.is_paused():
-            self.logger.info(f"Scan skipped: {self.pause_state.reason()}")
+            self.logger.warning(f"⏸️ Scan skipped: PAUSE - {self.pause_state.reason()}")
             return
 
         scan_start = time.time()
         self.stats['last_scan_time'] = datetime.utcnow()
 
-        self.logger.info("Starting market scan...")
+        self.logger.info("🔍 Starting REAL market scan...")
 
         # Update paper trader prices with last known prices from cache
         current_prices = {}
@@ -274,14 +283,14 @@ class ScannerJob:
         errors_count = 0
 
         if not self.universe:
-            self.logger.warning("No symbols in universe - skipping scan")
+            self.logger.warning("⚠️ No symbols in universe - skipping scan")
             return
 
         # Get symbol list
         symbols = list(self.universe.keys())
         total_symbols = len(symbols)
 
-        self.logger.info(f"Scanning {total_symbols} symbols...")
+        self.logger.info(f"📊 Scanning {total_symbols} symbols for REAL signals...")
 
         # Process symbols in batches to avoid overwhelming the API
         batch_size = 10
@@ -301,11 +310,11 @@ class ScannerJob:
             # Process results
             for symbol, result in zip(batch, batch_results):
                 if isinstance(result, Exception):
-                    self.logger.error(f"Error processing {symbol}: {result}")
+                    self.logger.error(f"❌ Error processing {symbol}: {result}")
                     errors_count += 1
                 elif result and result.get('signal_created'):
                     signals_created += 1
-                    self.logger.info(f"Signal created for {symbol}: score {result['score']:.1f}")
+                    self.logger.info(f"✅ REAL SIGNAL: {symbol} - Score: {result.get('score', 0):.1f}/10.0 - {result.get('direction', 'UNKNOWN')}")
             
             symbols_scanned += len(batch)
             
@@ -320,10 +329,33 @@ class ScannerJob:
         
         scan_duration = time.time() - scan_start
         
+        # CRITICAL: Log REAL statistics
         self.logger.info(
-            f"Scan completed in {scan_duration:.1f}s: "
-            f"{symbols_scanned} symbols scanned, {signals_created} signals created, {errors_count} errors"
+            f"✅ REAL SCAN COMPLETED: {scan_duration:.1f}s - "
+            f"{symbols_scanned} symbols scanned, {signals_created} REAL signals created, {errors_count} errors"
         )
+        
+        # Store scan stats for bot queries
+        self.scan_stats = {
+            'symbols_scanned': symbols_scanned,
+            'signals_created': signals_created,
+            'errors_count': errors_count,
+            'scan_duration': scan_duration,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+    
+    def get_scan_stats(self) -> Dict[str, Any]:
+        """Return real scan statistics for bot queries."""
+        return {
+            'symbols_scanned': self.scan_stats.get('symbols_scanned', 0),
+            'signals_created': self.scan_stats.get('signals_created', 0),
+            'errors_count': self.scan_stats.get('errors_count', 0),
+            'scan_duration': self.scan_stats.get('scan_duration', 0),
+            'last_scan': self.scan_stats.get('timestamp'),
+            'total_scans': self.stats.get('symbols_scanned', 0),
+            'total_signals': self.stats.get('signals_created', 0),
+            'running': self.running
+        }
     
     async def _process_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Process a single symbol - fetch MTF data, calculate indicators, generate signals.
@@ -471,7 +503,7 @@ class ScannerJob:
             return {'symbol': symbol, 'error': str(e)}
     
     async def _fetch_ohlcv_data(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> Optional[List[List[float]]]:
-        """Fetch OHLCV data from MEXC API.
+        """Fetch real OHLCV data from MEXC API.
 
         Args:
             symbol: Trading symbol
@@ -484,28 +516,38 @@ class ScannerJob:
         try:
             self.stats['api_calls_made'] += 1
 
-            # Fetch candles at specified timeframe
+            # Fetch real candles at specified timeframe from exchange
             ohlcv = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             )
 
-            if not ohlcv or len(ohlcv) < 20:
-                self.logger.warning(f"Insufficient OHLCV data for {symbol} {timeframe}: {len(ohlcv) if ohlcv else 0} candles")
+            if not ohlcv or len(ohlcv) < 30:
+                self.logger.warning(f"Insufficient real OHLCV data for {symbol} {timeframe}: {len(ohlcv) if ohlcv else 0} candles")
                 return None
+
+            # Validate data integrity
+            for candle in ohlcv:
+                if len(candle) < 6:
+                    self.logger.warning(f"Invalid candle data for {symbol} {timeframe}")
+                    return None
+                
+                # Ensure OHLCV values are positive
+                if any(val <= 0 for val in candle[1:6]):
+                    self.logger.warning(f"Invalid OHLCV values for {symbol} {timeframe}: {candle}")
+                    return None
 
             return ohlcv
 
         except ccxt.NetworkError as e:
             self.logger.warning(f"Network error fetching {symbol}: {e}")
-            await asyncio.sleep(1)  # Brief retry delay
             return None
         except ccxt.RateLimitExceeded:
             self.logger.warning(f"Rate limit exceeded for {symbol}")
             await asyncio.sleep(5)  # Longer delay for rate limits
             return None
         except Exception as e:
-            self.logger.error(f"Error fetching OHLCV for {symbol}: {e}")
+            self.logger.warning(f"Error fetching {symbol} {timeframe}: {e}")
             return None
 
     def _get_last_closed_candle_ts(self, ohlcv: List[List[float]], timeframe: str) -> Optional[int]:
