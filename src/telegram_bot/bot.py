@@ -11,8 +11,10 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 from ..logger import get_logger
 from .formatters import (
-    format_status, format_signal, format_top_signals, 
-    format_symbol_analysis, format_warning
+    format_status,
+    format_signal,
+    format_symbol_analysis,
+    format_warning,
 )
 
 logger = get_logger(__name__)
@@ -251,40 +253,58 @@ Example: /symbol BTCUSDT
             await update.effective_message.reply_text(f"❌ Error generating report for {date}. Please try again.")
     
     async def top(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /top command - show top N signals.
-        
-        Args:
-            update: Telegram update object
-            context: Context object
-        """
-        # Check admin access
+        """Show top signals by confidence."""
         if not self._is_admin(update):
             if update.effective_message:
                 await update.effective_message.reply_text("❌ Access denied. Admin only.")
             return
+
         if not self.db_conn:
-            await update.effective_message.reply_text("❌ Database not available")
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Database unavailable")
             return
-        
+
         try:
-            # Query top signals from database
             from ..database import query_recent_signals
-            recent_signals = query_recent_signals(self.db_conn, limit=10)
-            
-            # Filter and sort by confidence
-            valid_signals = [
-                signal for signal in recent_signals 
-                if signal.get('confidence', 0) > 0.3  # More realistic for testing
-            ]
-            valid_signals.sort(key=lambda x: x.get('confidence', 0), reverse=True)
-            
-            top_text = format_top_signals(valid_signals, limit=5)
-            
-            await update.effective_message.reply_text(top_text, parse_mode='Markdown')
-            
+
+            signals = query_recent_signals(self.db_conn, limit=10)
+
+            real_signals = [s for s in signals if s.get('confidence', 0) > 0.3]
+
+            if not real_signals:
+                if update.effective_message:
+                    await update.effective_message.reply_text(
+                        "📊 No signals generated yet.\n\n"
+                        "Use /scanstart to enable scanner.",
+                        parse_mode='Markdown',
+                    )
+                return
+
+            real_signals.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+
+            text = "🔝 *Top Signals*\n\n"
+            for i, sig in enumerate(real_signals[:5], 1):
+                symbol = sig.get('symbol', 'UNKNOWN')
+                side = sig.get('side', 'UNKNOWN')
+                confidence = sig.get('confidence') or 0
+                regime = sig.get('regime', 'UNKNOWN')
+                entry_price = sig.get('entry_price') or 0
+
+                text += (
+                    f"{i}. {symbol}\n"
+                    f"   Side: {side}\n"
+                    f"   Confidence: {confidence:.0%}\n"
+                    f"   Regime: {regime}\n"
+                    f"   Price: {entry_price:.4f}\n\n"
+                )
+
+            if update.effective_message:
+                await update.effective_message.reply_text(text, parse_mode='Markdown')
+
         except Exception as e:
-            logger.error(f"Error fetching top signals: {e}")
-            await update.effective_message.reply_text("❌ Error fetching signals. Please try again.")
+            logger.error(f"Error in /top: {e}")
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Error fetching signals")
     
     async def symbol(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /symbol command - analyze specific symbol.

@@ -152,9 +152,19 @@ class WarningDetector:
                 await self._handle_warning(breadth_warning)
                 warnings_generated += 1
             
-            # 3. Check correlation spikes
+            # 3. Check correlation spikes (WARNING only - never pause on correlation)
             correlation_warnings = await self.detect_correlation_spike(symbols)
+            if correlation_warnings:
+                self.logger.info(
+                    f"{len(correlation_warnings)} correlation spike warnings detected (will not pause)"
+                )
+
             for warning in correlation_warnings:
+                if warning.get('severity') == 'CRITICAL':
+                    self.logger.info(
+                        "Downgrading CORRELATION_SPIKE warning to WARNING (never pause on correlation)"
+                    )
+                warning['severity'] = 'WARNING'
                 await self._handle_warning(warning)
                 warnings_generated += 1
                 
