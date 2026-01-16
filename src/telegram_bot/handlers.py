@@ -274,7 +274,8 @@ class ErrorHandler:
             update: Telegram update object
             context: Context object
         """
-        self.logger.error(f"Update {update} caused error {context.error}")
+        update_id = update.update_id if update else "Unknown"
+        self.logger.error(f"Update {update_id} caused error {context.error}")
         
         # Log error details
         if context.error:
