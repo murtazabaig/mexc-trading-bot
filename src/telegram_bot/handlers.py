@@ -42,14 +42,15 @@ class CommandHandlers:
         return str(update.effective_user.id) == self.bot.admin_chat_id or \
                update.effective_chat.id == int(self.bot.admin_chat_id)
     
-    async def admin_only(self, func):
+    def admin_only(func):
         """Decorator to ensure only admin can execute command."""
-        async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not self.is_admin(update):
-                await update.message.reply_text("❌ Access denied. Admin only.")
+                if update.effective_message:
+                    await update.effective_message.reply_text("❌ Access denied. Admin only.")
                 return
             
-            return await func(update, context)
+            return await func(self, update, context)
         return wrapper
     
     async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -76,7 +77,7 @@ Welcome! I'm your advanced trading signal assistant.
 
 This bot is in {'*TEST MODE*' if 'test' in str(self.bot.bot_token) else '*LIVE MODE*'}."""
         
-        await update.message.reply_text(welcome_text, parse_mode='Markdown')
+        await update.effective_message.reply_text(welcome_text, parse_mode='Markdown')
     
     @admin_only
     async def handle_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -109,7 +110,7 @@ Example: /symbol BTCUSDT
 
 *Happy Trading!* 🚀"""
         
-        await update.message.reply_text(help_text, parse_mode='Markdown')
+        await update.effective_message.reply_text(help_text, parse_mode='Markdown')
     
     @admin_only
     async def handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -124,13 +125,44 @@ Example: /symbol BTCUSDT
             mode=self.bot.mode
         )
         
-        await update.message.reply_text(status_text, parse_mode='Markdown')
+        await update.effective_message.reply_text(status_text, parse_mode='Markdown')
+
+    @admin_only
+    async def handle_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /report command - show daily summary."""
+        from datetime import timedelta
+        date = context.args[0] if context.args else (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        # Validate date format
+        try:
+            datetime.strptime(date, '%Y-%m-%d')
+        except ValueError:
+            await update.effective_message.reply_text("❌ Invalid date format. Please use YYYY-MM-DD.\nExample: /report 2025-01-15")
+            return
+
+        if not self.bot.db_conn:
+            await update.effective_message.reply_text("❌ Database not available")
+            return
+            
+        try:
+            from ..reporting.summarizer import ReportGenerator
+            from ..reporting.formatters import format_daily_summary
+            
+            generator = ReportGenerator()
+            summary = await generator.generate_daily_summary(self.bot.db_conn, date, self.bot.universe_size)
+            
+            report_text = format_daily_summary(summary)
+            await update.effective_message.reply_text(report_text, parse_mode='Markdown')
+            
+        except Exception as e:
+            logger.error(f"Error generating report for {date}: {e}")
+            await update.effective_message.reply_text(f"❌ Error generating report for {date}. Please try again.")
     
     @admin_only
     async def handle_top(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /top command - show top N signals."""
         if not self.bot.db_conn:
-            await update.message.reply_text("❌ Database not available")
+            await update.effective_message.reply_text("❌ Database not available")
             return
         
         try:
@@ -147,17 +179,17 @@ Example: /symbol BTCUSDT
             
             top_text = format_top_signals(valid_signals, limit=5)
             
-            await update.message.reply_text(top_text, parse_mode='Markdown')
+            await update.effective_message.reply_text(top_text, parse_mode='Markdown')
             
         except Exception as e:
             logger.error(f"Error fetching top signals: {e}")
-            await update.message.reply_text("❌ Error fetching signals. Please try again.")
+            await update.effective_message.reply_text("❌ Error fetching signals. Please try again.")
     
     @admin_only
     async def handle_symbol(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /symbol command - analyze specific symbol."""
         if not context.args:
-            await update.message.reply_text("❌ Please specify a symbol.\nExample: /symbol BTCUSDT")
+            await update.effective_message.reply_text("❌ Please specify a symbol.\nExample: /symbol BTCUSDT")
             return
         
         symbol = context.args[0].upper().replace('/', '').replace('-', '')
@@ -188,18 +220,18 @@ Example: /symbol BTCUSDT
                 last_signals=symbol_signals
             )
             
-            await update.message.reply_text(analysis_text, parse_mode='Markdown')
+            await update.effective_message.reply_text(analysis_text, parse_mode='Markdown')
             
         except Exception as e:
             logger.error(f"Error analyzing symbol {symbol}: {e}")
-            await update.message.reply_text(f"❌ Error analyzing {symbol}. Please try again.")
+            await update.effective_message.reply_text(f"❌ Error analyzing {symbol}. Please try again.")
     
     @admin_only
     async def handle_scanstart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /scanstart command - enable scanning."""
         self.bot.set_mode("scanning")
         
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "🔍 *Market Scanning Enabled*\\n\\n"
             "✅ Scanner is now active\\n"
             "📊 Monitoring all symbols for opportunities\\n"
@@ -213,7 +245,7 @@ Example: /symbol BTCUSDT
         """Handle /scanstop command - disable scanning."""
         self.bot.set_mode("paused")
         
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "⏸️ *Market Scanning Paused*\\n\\n"
             "🛑 Scanner has been stopped\\n"
             "📊 No new signals will be generated\\n"
@@ -287,12 +319,15 @@ def setup_handlers(application, bot_instance):
     handlers = CommandHandlers(bot_instance)
     error_handler = ErrorHandler(bot_instance)
     
+    logger.info("Registering Telegram command handlers (via handlers.py)...")
+    
     # Add command handlers
     application.add_handler(CommandHandler("start", handlers.handle_start))
     application.add_handler(CommandHandler("help", handlers.handle_help))
     application.add_handler(CommandHandler("status", handlers.handle_status))
     application.add_handler(CommandHandler("top", handlers.handle_top))
     application.add_handler(CommandHandler("symbol", handlers.handle_symbol))
+    application.add_handler(CommandHandler("report", handlers.handle_report))
     application.add_handler(CommandHandler("scanstart", handlers.handle_scanstart))
     application.add_handler(CommandHandler("scanstop", handlers.handle_scanstop))
     
