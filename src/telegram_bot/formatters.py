@@ -78,10 +78,11 @@ def format_status(
     # Scanner status
     scanner_line = "Scanner: offline"
     if scanner_stats:
-        last_run = format_time_ago(scanner_stats.get('last_scan_time'))
-        signals = scanner_stats.get('total_signals_created', 0)
-        errors = scanner_stats.get('total_errors', 0)
-        scanner_line = f"Scanner: last run {last_run} | signals generated: {signals} | errors: {errors}"
+        last_run = format_time_ago(scanner_stats.get('last_scan'))
+        signals = scanner_stats.get('signals_created', 0)
+        symbols = scanner_stats.get('symbols_scanned', 0)
+        errors = scanner_stats.get('errors_count', 0)
+        scanner_line = f"Scanner: {symbols} symbols scanned, {signals} signals created | errors: {errors} | last: {last_run}"
     
     # Warning status
     warning_line = "Warnings: offline"
