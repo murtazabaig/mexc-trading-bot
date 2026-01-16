@@ -66,7 +66,11 @@ class WarningDetector:
         self.breadth_collapse_threshold_critical = 0.50  # 50%
         self.correlation_spike_threshold_warning = 0.30  # 30%
         self.correlation_spike_threshold_critical = 0.50  # 50%
-        
+
+        self._correlation_spike_last_emitted: Dict[str, float] = {}
+        self.correlation_spike_cooldown_sec = 60 * 60
+        self.max_correlation_spike_warnings_per_run = 25
+
     def set_scheduler(self, scheduler: AsyncIOScheduler):
         """Set APScheduler instance.
         
@@ -168,7 +172,10 @@ class WarningDetector:
             f"Warning check completed in {check_duration:.1f}s: "
             f"{warnings_generated} warnings generated, {errors_count} errors"
         )
-    
+
+    async def _check_all_warnings(self):
+        await self.run_detection()
+
     async def detect_btc_shock(self) -> Optional[Dict[str, Any]]:
         """Detect BTC price shock - sudden >5% move within 1 hour.
         
@@ -378,9 +385,16 @@ class WarningDetector:
                 # Brief pause between batches
                 if i + batch_size < len(symbols):
                     await asyncio.sleep(0.5)
-            
+
+            warnings.sort(key=lambda w: w.get('correlation_change_pct', 0), reverse=True)
+            if (
+                self.max_correlation_spike_warnings_per_run
+                and len(warnings) > self.max_correlation_spike_warnings_per_run
+            ):
+                warnings = warnings[: self.max_correlation_spike_warnings_per_run]
+
             return warnings
-            
+
         except Exception as e:
             self.logger.error(f"Error detecting correlation spikes: {e}")
             return warnings
@@ -416,20 +430,20 @@ class WarningDetector:
             
             # Calculate correlation change
             correlation_change = abs(current_corr - previous_corr)
-            
-            # Check thresholds
-            severity = None
-            if correlation_change > self.correlation_spike_threshold_critical:
-                severity = 'CRITICAL'
-            elif correlation_change > self.correlation_spike_threshold_warning:
-                severity = 'WARNING'
-            else:
+
+            if correlation_change <= self.correlation_spike_threshold_warning:
                 return None
-            
-            # Create warning
+
+            now = time.time()
+            last_emitted = self._correlation_spike_last_emitted.get(symbol)
+            if last_emitted and now - last_emitted < self.correlation_spike_cooldown_sec:
+                return None
+
+            self._correlation_spike_last_emitted[symbol] = now
+
             warning = {
                 'type': 'CORRELATION_SPIKE',
-                'severity': 'WARNING',  # Change from CRITICAL to WARNING
+                'severity': 'WARNING',
                 'symbol': symbol,
                 'correlation_change_pct': correlation_change,
                 'previous_correlation': previous_corr,
@@ -437,11 +451,13 @@ class WarningDetector:
                 'timestamp': datetime.utcnow().isoformat(),
                 'message': f'{symbol} correlation with BTC changed by {correlation_change:.2%}',
                 'triggered_value': correlation_change,
-                'threshold': self.correlation_spike_threshold_warning if severity == 'WARNING' else self.correlation_spike_threshold_critical,
-                'action_taken': 'MONITORING'
+                'threshold': self.correlation_spike_threshold_warning,
+                'action_taken': 'MONITORING',
             }
-            
-            self.logger.warning(f"Correlation spike detected for {symbol}: {correlation_change:.2%} change - {severity}")
+
+            self.logger.warning(
+                f"Correlation spike detected for {symbol}: {correlation_change:.2%} change"
+            )
             return warning
             
         except Exception as e:
@@ -636,16 +652,20 @@ class WarningDetector:
             warning: Warning dictionary
         """
         try:
-            # Check for critical severity and pause if necessary
-            if warning.get('severity') == 'CRITICAL' and self.pause_state:
+            pause_worthy_types = {'BTC_SHOCK', 'BREADTH_COLLAPSE'}
+            if (
+                warning.get('severity') == 'CRITICAL'
+                and warning.get('type') in pause_worthy_types
+                and self.pause_state
+            ):
                 reason = f"CRITICAL_WARNING: {warning['type']} - {warning['message']}"
                 self.pause_state.pause(reason)
                 warning['action_taken'] = 'PAUSED_SIGNALS'
                 self.logger.warning(f"System PAUSED due to critical warning: {reason}")
 
             # Store in database
-            warning_id = await self._store_warning_in_database(warning)
-            
+            await self._store_warning_in_database(warning)
+
             # Send to Telegram if available
             if hasattr(self, 'telegram_bot') and self.telegram_bot:
                 await self.telegram_bot.send_warning(warning)
