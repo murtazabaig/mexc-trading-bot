@@ -274,7 +274,7 @@ Example: /symbol BTCUSDT
             # Filter and sort by confidence
             valid_signals = [
                 signal for signal in recent_signals 
-                if signal.get('confidence', 0) > 0.5  # Only high confidence
+                if signal.get('confidence', 0) > 0.3  # More realistic for testing
             ]
             valid_signals.sort(key=lambda x: x.get('confidence', 0), reverse=True)
             
@@ -348,6 +348,10 @@ Example: /symbol BTCUSDT
             if update.effective_message:
                 await update.effective_message.reply_text("❌ Access denied. Admin only.")
             return
+        
+        # Actually enable the scanner
+        if self.scanner:
+            self.scanner.running = True
         if self.pause_state:
             self.pause_state.resume()
         self.set_mode("scanning")
@@ -373,6 +377,10 @@ Example: /symbol BTCUSDT
             if update.effective_message:
                 await update.effective_message.reply_text("❌ Access denied. Admin only.")
             return
+        
+        # Actually disable the scanner
+        if self.scanner:
+            self.scanner.running = False
         if self.pause_state:
             self.pause_state.pause("Stopped by user via Telegram")
         self.set_mode("paused")
