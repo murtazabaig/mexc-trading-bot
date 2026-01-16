@@ -429,7 +429,7 @@ class WarningDetector:
             # Create warning
             warning = {
                 'type': 'CORRELATION_SPIKE',
-                'severity': severity,
+                'severity': 'WARNING',  # Change from CRITICAL to WARNING
                 'symbol': symbol,
                 'correlation_change_pct': correlation_change,
                 'previous_correlation': previous_corr,

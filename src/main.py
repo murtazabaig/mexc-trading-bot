@@ -93,6 +93,7 @@ async def async_main(args: argparse.Namespace, config: Config) -> int:
             portfolio_manager=portfolio_manager,
             pause_state=pause_state
         )
+        scanner.running = True  # ADD THIS - enables scanning at startup
 
         warning_detector = WarningDetector(
             exchange=exchange,

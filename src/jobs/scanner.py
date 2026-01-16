@@ -244,45 +244,48 @@ class ScannerJob:
     
     async def run_scan(self):
         """Main scanning function - processes all symbols in universe."""
+        # Check BEFORE processing, not during loop
+        if not self.running:
+            self.logger.info("Scan skipped: scanner disabled")
+            return
+
         if self.pause_state and self.pause_state.is_paused():
             self.logger.info(f"Scan skipped: {self.pause_state.reason()}")
             return
 
         scan_start = time.time()
         self.stats['last_scan_time'] = datetime.utcnow()
-        
+
         self.logger.info("Starting market scan...")
-        
+
         # Update paper trader prices with last known prices from cache
         current_prices = {}
         for symbol in self.universe.keys():
             price = self.cache.get_latest_price(symbol)
             if price:
                 current_prices[symbol] = price
-        
+
         if current_prices:
             self.paper_trader.update_prices(current_prices)
-        
+
         # Reset counters for this scan
         symbols_scanned = 0
         signals_created = 0
         errors_count = 0
-        
+
         if not self.universe:
             self.logger.warning("No symbols in universe - skipping scan")
             return
-        
+
         # Get symbol list
         symbols = list(self.universe.keys())
         total_symbols = len(symbols)
-        
+
         self.logger.info(f"Scanning {total_symbols} symbols...")
-        
+
         # Process symbols in batches to avoid overwhelming the API
         batch_size = 10
         for i in range(0, total_symbols, batch_size):
-            if not self.running:
-                break
             
             batch = symbols[i:i + batch_size]
             
