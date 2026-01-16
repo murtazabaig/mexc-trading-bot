@@ -42,17 +42,6 @@ class CommandHandlers:
         return str(update.effective_user.id) == self.bot.admin_chat_id or \
                update.effective_chat.id == int(self.bot.admin_chat_id)
     
-    def admin_only(func):
-        """Decorator to ensure only admin can execute command."""
-        async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-            if not self.is_admin(update):
-                if update.effective_message:
-                    await update.effective_message.reply_text("❌ Access denied. Admin only.")
-                return
-            
-            return await func(self, update, context)
-        return wrapper
-    
     async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command - welcome message."""
         welcome_text = f"""🤖 *MEXC Futures Signal Bot*
@@ -78,10 +67,14 @@ Welcome! I'm your advanced trading signal assistant.
 This bot is in {'*TEST MODE*' if 'test' in str(self.bot.bot_token) else '*LIVE MODE*'}."""
         
         await update.effective_message.reply_text(welcome_text, parse_mode='Markdown')
-    
-    @admin_only
+
     async def handle_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command - list all commands."""
+        # Check admin access
+        if not self.is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Access denied. Admin only.")
+            return
         help_text = """🔧 *Bot Commands*
 
 📊 *Status & Monitoring:*
@@ -111,10 +104,14 @@ Example: /symbol BTCUSDT
 *Happy Trading!* 🚀"""
         
         await update.effective_message.reply_text(help_text, parse_mode='Markdown')
-    
-    @admin_only
+
     async def handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command - show bot status."""
+        # Check admin access
+        if not self.is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Access denied. Admin only.")
+            return
         # Calculate uptime
         uptime_seconds = int((datetime.now(timezone.utc) - self.bot.start_time).total_seconds())
         
@@ -127,9 +124,13 @@ Example: /symbol BTCUSDT
         
         await update.effective_message.reply_text(status_text, parse_mode='Markdown')
 
-    @admin_only
     async def handle_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /report command - show daily summary."""
+        # Check admin access
+        if not self.is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Access denied. Admin only.")
+            return
         from datetime import timedelta
         date = context.args[0] if context.args else (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
         
@@ -157,10 +158,14 @@ Example: /symbol BTCUSDT
         except Exception as e:
             logger.error(f"Error generating report for {date}: {e}")
             await update.effective_message.reply_text(f"❌ Error generating report for {date}. Please try again.")
-    
-    @admin_only
+
     async def handle_top(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /top command - show top N signals."""
+        # Check admin access
+        if not self.is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Access denied. Admin only.")
+            return
         if not self.bot.db_conn:
             await update.effective_message.reply_text("❌ Database not available")
             return
@@ -184,10 +189,14 @@ Example: /symbol BTCUSDT
         except Exception as e:
             logger.error(f"Error fetching top signals: {e}")
             await update.effective_message.reply_text("❌ Error fetching signals. Please try again.")
-    
-    @admin_only
+
     async def handle_symbol(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /symbol command - analyze specific symbol."""
+        # Check admin access
+        if not self.is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Access denied. Admin only.")
+            return
         if not context.args:
             await update.effective_message.reply_text("❌ Please specify a symbol.\nExample: /symbol BTCUSDT")
             return
@@ -225,10 +234,14 @@ Example: /symbol BTCUSDT
         except Exception as e:
             logger.error(f"Error analyzing symbol {symbol}: {e}")
             await update.effective_message.reply_text(f"❌ Error analyzing {symbol}. Please try again.")
-    
-    @admin_only
+
     async def handle_scanstart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /scanstart command - enable scanning."""
+        # Check admin access
+        if not self.is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Access denied. Admin only.")
+            return
         self.bot.set_mode("scanning")
         
         await update.effective_message.reply_text(
@@ -239,10 +252,14 @@ Example: /symbol BTCUSDT
             "Happy hunting! 🎯",
             parse_mode='Markdown'
         )
-    
-    @admin_only
+
     async def handle_scanstop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /scanstop command - disable scanning."""
+        # Check admin access
+        if not self.is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Access denied. Admin only.")
+            return
         self.bot.set_mode("paused")
         
         await update.effective_message.reply_text(
