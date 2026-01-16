@@ -93,17 +93,6 @@ class MexcSignalBot:
         return str(update.effective_user.id) == self.admin_chat_id or \
                update.effective_chat.id == int(self.admin_chat_id)
     
-    def _admin_only(func):
-        """Decorator to ensure only admin can execute command."""
-        async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-            if not self._is_admin(update):
-                if update.effective_message:
-                    await update.effective_message.reply_text("❌ Access denied. Admin only.")
-                return
-            
-            return await func(self, update, context)
-        return wrapper
-    
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command - welcome message.
         
@@ -136,7 +125,6 @@ This bot is in {'*TEST MODE*' if 'test' in str(self.bot_token) else '*LIVE MODE*
         
         await update.effective_message.reply_text(welcome_text, parse_mode='Markdown')
     
-    @_admin_only
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command - list all commands.
         
@@ -144,6 +132,11 @@ This bot is in {'*TEST MODE*' if 'test' in str(self.bot_token) else '*LIVE MODE*
             update: Telegram update object
             context: Context object
         """
+        # Check admin access
+        if not self._is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Access denied. Admin only.")
+            return
         help_text = """🔧 *Bot Commands*
 
 📊 *Status & Monitoring:*
@@ -175,7 +168,6 @@ Example: /symbol BTCUSDT
         
         await update.effective_message.reply_text(help_text, parse_mode='Markdown')
     
-    @_admin_only
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command - show bot status.
         
@@ -183,6 +175,11 @@ Example: /symbol BTCUSDT
             update: Telegram update object
             context: Context object
         """
+        # Check admin access
+        if not self._is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Access denied. Admin only.")
+            return
         # Calculate uptime
         uptime_seconds = int((datetime.now(timezone.utc) - self.start_time).total_seconds())
         
@@ -213,7 +210,6 @@ Example: /symbol BTCUSDT
         
         await update.effective_message.reply_text(status_text, parse_mode='Markdown')
 
-    @_admin_only
     async def report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /report command - show daily summary.
         
@@ -221,6 +217,11 @@ Example: /symbol BTCUSDT
             update: Telegram update object
             context: Context object
         """
+        # Check admin access
+        if not self._is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Access denied. Admin only.")
+            return
         from datetime import timedelta
         date = context.args[0] if context.args else (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
         
@@ -249,7 +250,6 @@ Example: /symbol BTCUSDT
             logger.error(f"Error generating report for {date}: {e}")
             await update.effective_message.reply_text(f"❌ Error generating report for {date}. Please try again.")
     
-    @_admin_only
     async def top(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /top command - show top N signals.
         
@@ -257,6 +257,11 @@ Example: /symbol BTCUSDT
             update: Telegram update object
             context: Context object
         """
+        # Check admin access
+        if not self._is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Access denied. Admin only.")
+            return
         if not self.db_conn:
             await update.effective_message.reply_text("❌ Database not available")
             return
@@ -281,7 +286,6 @@ Example: /symbol BTCUSDT
             logger.error(f"Error fetching top signals: {e}")
             await update.effective_message.reply_text("❌ Error fetching signals. Please try again.")
     
-    @_admin_only
     async def symbol(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /symbol command - analyze specific symbol.
         
@@ -289,6 +293,11 @@ Example: /symbol BTCUSDT
             update: Telegram update object
             context: Context object
         """
+        # Check admin access
+        if not self._is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Access denied. Admin only.")
+            return
         if not context.args:
             await update.effective_message.reply_text("❌ Please specify a symbol.\nExample: /symbol BTCUSDT")
             return
@@ -327,7 +336,6 @@ Example: /symbol BTCUSDT
             logger.error(f"Error analyzing symbol {symbol}: {e}")
             await update.effective_message.reply_text(f"❌ Error analyzing {symbol}. Please try again.")
     
-    @_admin_only
     async def scanstart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /scanstart command - enable scanning.
         
@@ -335,6 +343,11 @@ Example: /symbol BTCUSDT
             update: Telegram update object
             context: Context object
         """
+        # Check admin access
+        if not self._is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Access denied. Admin only.")
+            return
         if self.pause_state:
             self.pause_state.resume()
         self.set_mode("scanning")
@@ -348,7 +361,6 @@ Example: /symbol BTCUSDT
             parse_mode='Markdown'
         )
     
-    @_admin_only
     async def scanstop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /scanstop command - disable scanning.
         
@@ -356,6 +368,11 @@ Example: /symbol BTCUSDT
             update: Telegram update object
             context: Context object
         """
+        # Check admin access
+        if not self._is_admin(update):
+            if update.effective_message:
+                await update.effective_message.reply_text("❌ Access denied. Admin only.")
+            return
         if self.pause_state:
             self.pause_state.pause("Stopped by user via Telegram")
         self.set_mode("paused")
