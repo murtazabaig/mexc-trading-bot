@@ -20,7 +20,8 @@ def init_db(db_path: str = "data/signals.db") -> sqlite3.Connection:
     
     conn = sqlite3.connect(
         db_path,
-        detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES
+        detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+        check_same_thread=False  # Allow use across threads
     )
     conn.row_factory = sqlite3.Row
     # Enable foreign keys

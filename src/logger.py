@@ -50,6 +50,13 @@ def setup_logging(log_dir: str = "logs", debug: bool = False) -> None:
     # Remove default handlers
     logger.remove()
     
+    # Add patcher to escape brackets in messages to prevent loguru formatting errors
+    # with Telegram objects like <ChatType.PRIVATE> which loguru tries to parse as color tags
+    def escape_brackets(record):
+        record["message"] = record["message"].replace("<", "<<").replace(">", ">>")
+    
+    logger.configure(patcher=escape_brackets)
+    
     # Create formatter instance
     json_formatter = JSONLFormatter()
     

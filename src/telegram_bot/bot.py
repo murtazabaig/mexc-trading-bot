@@ -458,7 +458,8 @@ Example: /symbol BTCUSDT
             update: Telegram update object
             context: Context object
         """
-        logger.error(f"Update {update} caused error {context.error}")
+        update_id = update.update_id if update else "Unknown"
+        logger.error(f"Update {update_id} caused error {context.error}")
         
         if update and update.effective_message:
             try:
